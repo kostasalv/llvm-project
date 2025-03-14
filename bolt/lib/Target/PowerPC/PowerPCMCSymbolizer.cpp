@@ -1,0 +1,15 @@
+//===- bolt/Target/PowerPC/PowerPCMCSymbolizer.cpp ------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// #include "PowerPCMCSymbolizer.h"
+// #include "bolt/Core/BinaryContext.h"
+// #include "bolt/Core/BinaryFunction.h"
+// #include "bolt/Core/MCPlusBuilder.h"
+// #include "bolt/Core/Relocation.h"
+// #include "llvm/MC/MCInst.h"
+// #include "llvm/Support/Debug.h"
