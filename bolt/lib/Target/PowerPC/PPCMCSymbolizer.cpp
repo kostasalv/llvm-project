@@ -1,4 +1,4 @@
-//===- bolt/Target/PowerPC/PowerPCMCSymbolizer.cpp ------------------------===//
+//===- bolt/Target/PowerPC/PPCMCSymbolizer.cpp ------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// #include "PowerPCMCSymbolizer.h"
+// #include "PPCMCSymbolizer.h"
 // #include "bolt/Core/BinaryContext.h"
 // #include "bolt/Core/BinaryFunction.h"
 // #include "bolt/Core/MCPlusBuilder.h"
