@@ -1310,6 +1310,7 @@ Error BinaryFunction::disassemble() {
   LabelsMapType InstructionLabels;
 
   uint64_t Size = 0; // instruction size
+  bool SeenTerminator = false; // PPC64: track if we passed a return/branch
   for (uint64_t Offset = 0; Offset < getSize(); Offset += Size) {
     MCInst Instruction;
     const uint64_t AbsoluteInstrAddr = getAddress() + Offset;
@@ -1328,6 +1329,19 @@ Error BinaryFunction::disassemble() {
       if (isZeroPaddingAt(Offset))
         break;
 
+      // PPC64 ELFv2: functions often have trailing data after the last
+      // return/branch instruction (local entry offsets, exception table
+      // pointers, etc.). The ELF symbol size includes this data, but
+      // it is not code. If we already saw a terminator instruction,
+      // treat undisassemblable bytes as trailing data and stop cleanly.
+      if (BC.isPPC64() && SeenTerminator) {
+        LLVM_DEBUG(dbgs() << "BOLT-DEBUG: PPC64: treating bytes at offset 0x"
+                          << Twine::utohexstr(Offset)
+                          << " as trailing data after terminator in "
+                          << *this << "\n");
+        break;
+      }
+
       BC.errs()
           << "BOLT-WARNING: unable to disassemble instruction at offset 0x"
           << Twine::utohexstr(Offset) << " (address 0x"
@@ -1342,6 +1356,12 @@ Error BinaryFunction::disassemble() {
       }
 
       break;
+    }
+
+    // PPC64: track terminator instructions (blr, bctr, unconditional branch)
+    if (BC.isPPC64() &&
+        (MIB->isReturn(Instruction) || MIB->isUnconditionalBranch(Instruction))) {
+      SeenTerminator = true;
     }
 
     // Check integrity of LLVM assembler/disassembler.
@@ -4354,14 +4374,36 @@ bool BinaryFunction::isSymbolValidInScope(const SymbolRef &Symbol,
 
   // It's okay to have a zero-sized symbol in the middle of non-zero-sized
   // function.
-  if (SymbolSize == 0 && containsAddress(cantFail(Symbol.getAddress())))
+  if (SymbolSize == 0 && containsAddress(cantFail(Symbol.getAddress()))) {
+    // PPC64 ELFv2: PLT call stubs are placed in .text as LOCAL NOTYPE
+    // symbols with names like "00000037.plt_call.puts@@GLIBC_2.17".
+    // These must NOT be absorbed into previous functions - they are
+    // separate call stubs that each end at a bctr instruction.
+    if (BC.isPPC64()) {
+      StringRef SymName = cantFail(Symbol.getName());
+      if (SymName.contains("plt_call.") || SymName.contains("plt_branch.") ||
+          SymName.contains("__glink")) {
+        return false;
+      }
+    }
     return true;
+  }
 
   if (cantFail(Symbol.getType()) != SymbolRef::ST_Unknown)
     return false;
 
   if (cantFail(Symbol.getFlags()) & SymbolRef::SF_Global)
     return false;
+
+  // PPC64 ELFv2: PLT call stubs in .text must start new functions,
+  // not be absorbed as local symbols of previous functions.
+  if (BC.isPPC64()) {
+    StringRef SymName = cantFail(Symbol.getName());
+    if (SymName.contains("plt_call.") || SymName.contains("plt_branch.") ||
+        SymName.contains("__glink")) {
+      return false;
+    }
+  }
 
   return true;
 }

@@ -160,20 +160,16 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
 }
 
 bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
+  // PPC64 ELFv2: tail calls are simply branches (B/BA/BCTR) WITHOUT
+  // the link bit. Adding the link bit (BL/BLA/BCTRL) would make them
+  // regular calls that corrupt LR. A tail call on PPC64 is already
+  // in the correct form -- just mark it as a tail call without
+  // changing the opcode.
   switch (Inst.getOpcode()) {
-  // Uncoditional direct branch -> add link bit
-  case PPC::B: // relative
-    Inst.setOpcode(PPC::BL);
-    return true;
-  case PPC::BA: // absolute
-    Inst.setOpcode(PPC::BLA);
-    return true;
-
-  // Indirect branch via CTR -> add link bit
-  case PPC::BCTR:
-    Inst.setOpcode(PPC::BCTRL);
-    return true;
-  // Contitional branches
+  case PPC::B:    // relative branch - already a tail call form
+  case PPC::BA:   // absolute branch - already a tail call form
+  case PPC::BCTR: // indirect via CTR - already a tail call form
+    return true;  // Do NOT add link bit
   default:
     return false;
   }

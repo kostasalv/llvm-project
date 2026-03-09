@@ -474,15 +474,9 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
     for (auto I = BB->begin(), E = BB->end(); I != E; ++I) {
       MCInst &Instr = *I;
 
-      // PPC64 ELFv2: JITLink expects a NOP at call+4 and will rewrite it to
-      // 'ld r2,24(r1)'. The static linker already emits the  LD and then
-      // JITLink asserts that it expects NOP at call+4. Normalise here so
-      // JITLink doesn't assert.
+      // PPC64 ELFv2: Preserve TOC restore (ld r2,24(r1)) after calls.
       if (BC.isPPC64() && LastWasCall && BC.MIB->isTOCRestoreAfterCall(Instr)) {
-        LLVM_DEBUG(dbgs() << "PPC emit: normalizing TOC-restore after call\n");
-        MCInst Nop;
-        BC.MIB->createNoop(Nop); // ori r0,r0,0
-        Streamer.emitInstruction(Nop, *BC.STI);
+        Streamer.emitInstruction(Instr, *BC.STI);
         LastWasCall = false;
         continue;
       }
