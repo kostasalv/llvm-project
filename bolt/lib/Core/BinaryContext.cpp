@@ -166,7 +166,8 @@ BinaryContext::BinaryContext(std::unique_ptr<MCContext> Ctx,
 
 BinaryContext::~BinaryContext() {
   for (BinarySection *Section : Sections)
-    delete Section;
+       if (!Section->isAnonymous())
+	  delete Section;
   for (BinaryFunction *InjectedFunction : InjectedBinaryFunctions)
     delete InjectedFunction;
   for (std::pair<const uint64_t, JumpTable *> JTI : JumpTables)
@@ -2510,6 +2511,13 @@ DEBUG_WITH_TYPE("bolt-flags", {
   // --- org-sanitize block (insert here) ---
   static constexpr char kOrgPrefix[] = ".bolt.org";
   llvm::StringRef NewNameRef(Section.Name);
+
+  // For .bolt.org.* sections, mark them as non-deletable by normal cleanup
+  if (NewNameRef.starts_with(kOrgPrefix)) {
+    Section.setAnonymous(true);
+    Section.setLinkOnly();
+  }
+
 
   if (NewNameRef.starts_with(kOrgPrefix)) {  
     unsigned F = Section.getELFFlags();

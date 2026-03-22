@@ -486,7 +486,8 @@ public:
   /// BinarySection.
   void updateContents(const uint8_t *NewData, size_t NewSize) {
     if (getOutputData() && !hasValidSectionID() &&
-        (!hasSectionRef() ||
+        !getName().starts_with(".bolt.org") &&
+		    (!hasSectionRef() ||
          OutputContents.data() != getContentsOrQuit(Section).data())) {
 if (llvm::DebugFlag) {
   llvm::dbgs() << "[bs] updateContents freeing old contents this=" << (const void *)this
