@@ -142,9 +142,11 @@ void ExecutableFileMemoryManager::updateSection(
 
   BinarySection *Section = nullptr;
 
-    // CRITICAL: Skip registering backup sections - they should be handled separately
+  // CRITICAL: Skip registering backup sections - they should be handled
+  // separately
   if (SectionName.starts_with(OrgSecPrefix)) {
-    LLVM_DEBUG(dbgs() << "[EFMM] Skipping backup section registration: " << SectionName << "\n");
+    LLVM_DEBUG(dbgs() << "[EFMM] Skipping backup section registration: "
+                      << SectionName << "\n");
     return;
   }
 
@@ -189,7 +191,7 @@ void ExecutableFileMemoryManager::updateSection(
            << Contents << ", ID = " << SectionID << "\n";
   });
 
-    Section->setSectionID(SectionID);
+  Section->setSectionID(SectionID);
 
   // DEBUG: Verify section ID is set correctly
   LLVM_DEBUG({
@@ -199,28 +201,23 @@ void ExecutableFileMemoryManager::updateSection(
            << " isBoltOrg=" << SectionName.starts_with(".bolt.org") << "\n";
   });
 
-LLVM_DEBUG({
-  dbgs() << "[sect] updateSection:"
-         << " JL=" << JLSection.getName()
-         << " Name=" << SectionName
-         << " BS=" << Section->getName()
-         << " IsCode=" << (IsCode ? "Y":"N")
-         << " IsRO="   << (IsReadOnly ? "Y":"N")
-         << "\n";
-});
+  LLVM_DEBUG({
+    dbgs() << "[sect] updateSection:"
+           << " JL=" << JLSection.getName() << " Name=" << SectionName
+           << " BS=" << Section->getName() << " IsCode=" << (IsCode ? "Y" : "N")
+           << " IsRO=" << (IsReadOnly ? "Y" : "N") << "\n";
+  });
 
-static constexpr char kOrgPrefix[] = ".bolt.org";
-const bool IsOrgByJL   = JLSection.getName().starts_with(kOrgPrefix);
-const bool IsOrgByName = SectionName.starts_with(OrgSecPrefix);
-
+  static constexpr char kOrgPrefix[] = ".bolt.org";
+  const bool IsOrgByJL = JLSection.getName().starts_with(kOrgPrefix);
+  const bool IsOrgByName = SectionName.starts_with(OrgSecPrefix);
 
   // Skip buffer management for backup (.bolt.org.*) sections
   if (IsOrgByJL || IsOrgByName) {
     LLVM_DEBUG(dbgs() << "[sect] skip setSectionID for backup section");
     Section->setLinkOnly();
-    return;  // CRITICAL: prevent setSectionID for backups
+    return; // CRITICAL: prevent setSectionID for backups
   }
-
 }
 
 void ExecutableFileMemoryManager::allocate(const jitlink::JITLinkDylib *JD,

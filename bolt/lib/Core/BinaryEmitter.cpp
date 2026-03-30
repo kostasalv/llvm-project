@@ -1289,14 +1289,14 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
     // If emitting to an org-prefixed name, ensure zero relocations.
     if (StringRef(OutName).starts_with(OrgSecPrefix)) {
 
-DEBUG_WITH_TYPE("bolt-sections", {
-  const auto Range = Section.relocations();
-  const size_t RCount = std::distance(Range.begin(), Range.end());
-  dbgs() << "[emit] " << Section.getName()
-         << " flags=0x" << llvm::format_hex(Section.getELFFlags(), 8)
-         << " count=" << RCount << "\n";
-});
-      Section.clearRelocations();   // <-- drop BEFORE emission
+      DEBUG_WITH_TYPE("bolt-sections", {
+        const auto Range = Section.relocations();
+        const size_t RCount = std::distance(Range.begin(), Range.end());
+        dbgs() << "[emit] " << Section.getName() << " flags=0x"
+               << llvm::format_hex(Section.getELFFlags(), 8)
+               << " count=" << RCount << "\n";
+      });
+      Section.clearRelocations(); // <-- drop BEFORE emission
     }
 
     Section.emitAsData(Streamer, OutName);
