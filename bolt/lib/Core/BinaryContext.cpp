@@ -196,10 +196,6 @@ Expected<std::unique_ptr<BinaryContext>> BinaryContext::createBinaryContext(
     ArchName = "aarch64";
     FeaturesStr = "+all";
     break;
-  case llvm::Triple::riscv64:
-  case llvm::Triple::riscv32: {
-    ArchName = TheTriple.getArchName();
-  }
   case llvm::Triple::ppc64:
     if (Features)
       return createFatalBOLTError(
@@ -214,9 +210,11 @@ Expected<std::unique_ptr<BinaryContext>> BinaryContext::createBinaryContext(
     ArchName = "ppc64le";
     FeaturesStr = "";
     break;
-
-    if (!Features)
-      return createFatalBOLTError("RISCV target needs SubtargetFeatures");
+      case llvm::Triple::riscv64:
+      case llvm::Triple::riscv32: {
+        ArchName = TheTriple.getArchName();
+        if (!Features)
+          return createFatalBOLTError("RISCV target needs SubtargetFeatures");
     // We rely on relaxation for some transformations (e.g., promoting all calls
     // to PseudoCALL and then making JITLink relax them). Since the relax
     // feature is not stored in the object file, we manually enable it.
