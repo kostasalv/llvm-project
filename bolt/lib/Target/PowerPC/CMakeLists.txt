@@ -18,8 +18,10 @@ endif()
 add_llvm_library(LLVMBOLTTargetPowerPC
   PPCMCPlusBuilder.cpp
   PPCMCSymbolizer.cpp
+
   NO_EXPORT
   DISABLE_LLVM_LINK_LLVM_DYLIB
+
   DEPENDS
   PowerPCCommonTableGen
 )

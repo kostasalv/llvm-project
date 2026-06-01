@@ -4294,85 +4294,9 @@ void RewriteInstance::emitAndLink() {
 
   ErrorOr<BinarySection &> TextSection =
       BC->getUniqueSectionByName(BC->getMainCodeSectionName());
-
-  // If present, show flags BEFORE renaming (this captures the "original .text"
-  // state)
-  if (TextSection) {
-    DEBUG_WITH_TYPE("bolt-ppc64", {
-      const unsigned F = TextSection->getELFFlags();
-      dbgs() << "[ppc64] pre-rename: " << TextSection->getName() << "\n"
-             << "  flags=0x" << llvm::format_hex(F, 8)
-             << " (ALLOC=" << ((F & ELF::SHF_ALLOC) ? "yes" : "no")
-             << ", EXEC=" << ((F & ELF::SHF_EXECINSTR) ? "yes" : "no")
-             << ", EXCL=" << ((F & ELF::SHF_EXCLUDE) ? "yes" : "no") << ")\n";
-    });
-  }
-
-  // Guard logging BEFORE rename
-  DEBUG_WITH_TYPE("bolt-flags", {
-    dbgs() << "[decide-rename] HasRelocations="
-           << (BC->HasRelocations ? "true" : "false")
-           << " TextSection=" << (TextSection ? "non-null" : "null");
-    if (TextSection)
-      dbgs() << " name=" << TextSection->getName();
-    dbgs() << "\n";
-  });
-
-  if (BC->HasRelocations && TextSection) {
-    const std::string NewName =
-        (getOrgSecPrefix() + BC->getMainCodeSectionName()).str();
-    DEBUG_WITH_TYPE("bolt-flags", {
-      dbgs() << "[decide-rename] renaming " << TextSection->getName() << " -> "
-             << NewName << "\n";
-    });
-
-    BC->renameSection(*TextSection, NewName);
-
-    auto OldU = BC->getUniqueSectionByName(BC->getMainCodeSectionName());
-    auto NewU = BC->getUniqueSectionByName(NewName);
-
-    BinarySection *ByOld = OldU ? &*OldU : nullptr;
-    BinarySection *ByNew = NewU ? &*NewU : nullptr;
-
-    DEBUG_WITH_TYPE("bolt-flags", {
-      dbgs() << "[decide-rename] lookup old=" << BC->getMainCodeSectionName()
-             << " -> " << (ByOld ? "FOUND" : "NULL") << " | new=" << NewName
-             << " -> " << (ByNew ? "FOUND" : "NULL") << "\n";
-    });
-
-    assert(!ByOld && "old name still visible after rename");
-    assert(ByNew && "new name not visible after rename");
-  }
-
-  // Log flags after rename
-  DEBUG_WITH_TYPE("bolt-flags", {
-    const unsigned F = TextSection->getELFFlags();
-    dbgs() << "[post-rename] " << TextSection->getName() << " flags=0x"
-           << format_hex(F, 8)
-           << " (ALLOC=" << ((F & ELF::SHF_ALLOC) ? "yes" : "no")
-           << ", EXEC=" << ((F & ELF::SHF_EXECINSTR) ? "yes" : "no")
-           << ", EXCL=" << ((F & ELF::SHF_EXCLUDE) ? "yes" : "no") << ")\n";
-  });
-
-  // AFTER: same section object, new name. log immediately to catch bad flags
-  if (TextSection) {
-    DEBUG_WITH_TYPE("bolt-ppc64", {
-      const unsigned F = TextSection->getELFFlags();
-      dbgs() << "[ppc64] post-rename: " << TextSection->getName() << "\n"
-             << "  flags=0x" << llvm::format_hex(F, 8)
-             << " (ALLOC=" << ((F & ELF::SHF_ALLOC) ? "yes" : "no")
-             << ", EXEC=" << ((F & ELF::SHF_EXECINSTR) ? "yes" : "no")
-             << ", EXCL=" << ((F & ELF::SHF_EXCLUDE) ? "yes" : "no") << ")\n";
-      if (TextSection->getName().starts_with(getOrgSecPrefix()) &&
-          ((F & ELF::SHF_ALLOC) || (F & ELF::SHF_EXECINSTR))) {
-        dbgs() << "[ppc64][WARN] backup is RX right after rename\n";
-      }
-    });
-  } else {
-    DEBUG_WITH_TYPE("bolt-ppc64", {
-      dbgs() << "[ppc64] pre/post-rename skipped: .text section not found\n";
-    });
-  }
+  if (BC->HasRelocations && TextSection)
+    BC->renameSection(*TextSection,
+                      getOrgSecPrefix() + BC->getMainCodeSectionName());
 
   //////////////////////////////////////////////////////////////////////////////
   // Assign addresses to new sections.
@@ -4766,10 +4690,6 @@ void RewriteInstance::mapCodeSectionsInPlace(
     const unsigned Flags = BinarySection::getFlags(/*IsReadOnly=*/true,
                                                    /*IsText=*/true,
                                                    /*IsAllocatable=*/true);
-    StringRef NewName = getBOLTTextSectionName();
-    LLVM_DEBUG(dbgs() << "[reg] creating section name=" << NewName
-                      << " flags=" << llvm::format_hex(Flags, 8) << "\n");
-
     BinarySection &Section =
       BC->registerOrUpdateSection(getBOLTTextSectionName(),
                                   ELF::SHT_PROGBITS,
