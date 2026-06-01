@@ -486,7 +486,6 @@ public:
   /// BinarySection.
   void updateContents(const uint8_t *NewData, size_t NewSize) {
     if (getOutputData() && !hasValidSectionID() &&
-        !getName().starts_with(".bolt.org") &&
         (!hasSectionRef() ||
          OutputContents.data() != getContentsOrQuit(Section).data())) {
       if (llvm::DebugFlag) {
