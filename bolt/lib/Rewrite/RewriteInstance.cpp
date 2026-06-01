@@ -5408,9 +5408,6 @@ RewriteInstance::getOutputSections(ELFObjectFile<ELFT> *File,
     BinarySection *BinSec = BC->getSectionForSectionRef(SecRef);
     assert(BinSec && "Matching BinarySection should exist.");
 
-    if (BinSec->isAnonymous())
-      continue;
-
     ELFShdrTy NewSection = Section;
     NewSection.sh_offset = BinSec->getOutputFileOffset();
     NewSection.sh_size = BinSec->getOutputSize();
@@ -5426,9 +5423,6 @@ RewriteInstance::getOutputSections(ELFObjectFile<ELFT> *File,
   // Create entries for new non-allocatable sections.
   for (BinarySection &Section : BC->nonAllocatableSections()) {
     if (Section.getOutputFileOffset() <= LastFileOffset)
-      continue;
-
-    if (Section.isAnonymous())
       continue;
 
     if (opts::Verbosity >= 1)
