@@ -12,7 +12,7 @@
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/Support/MemAlloc.h"
 
-#undef  DEBUG_TYPE
+#undef DEBUG_TYPE
 #define DEBUG_TYPE "efmm"
 
 using namespace llvm;
@@ -64,10 +64,10 @@ struct SectionAllocInfo {
 struct AllocInfo {
   SmallVector<SectionAllocInfo, 8> AllocatedSections;
 
-~AllocInfo() {
-  for (auto &Sec : AllocatedSections)
-    deallocate_buffer(Sec.Address, Sec.Size, Sec.Alignment);
-}
+  ~AllocInfo() {
+    for (auto &Sec : AllocatedSections)
+      deallocate_buffer(Sec.Address, Sec.Size, Sec.Alignment);
+  }
 
   SectionAllocInfo allocateSection(const jitlink::Section &Section) {
     auto Size = JITLinkLinker::sectionSize(Section);
@@ -150,7 +150,7 @@ void ExecutableFileMemoryManager::updateSection(
 
     Section = &OrgSection.get();
     Section->updateContents(Contents, Size);
-    Section->setExternallyOwnedContents();  // buffer owned by JITLink
+    Section->setExternallyOwnedContents(); // buffer owned by JITLink
   } else {
     // If the input contains a section with the section name, rename it in the
     // output file to avoid the section name conflict and emit the new section
@@ -172,7 +172,7 @@ void ExecutableFileMemoryManager::updateSection(
     if (UsePrefix)
       NewSection.setOutputName(SectionName);
     Section = &NewSection;
-    NewSection.setExternallyOwnedContents();  // buffer owned by JITLink
+    NewSection.setExternallyOwnedContents(); // buffer owned by JITLink
   }
 
   LLVM_DEBUG({
@@ -184,27 +184,23 @@ void ExecutableFileMemoryManager::updateSection(
            << Contents << ", ID = " << SectionID << "\n";
   });
 
+  LLVM_DEBUG({
+    dbgs() << "[sect] updateSection:"
+           << " JL=" << JLSection.getName() << " Name=" << SectionName
+           << " BS=" << Section->getName() << " IsCode=" << (IsCode ? "Y" : "N")
+           << " IsRO=" << (IsReadOnly ? "Y" : "N") << "\n";
+  });
 
-LLVM_DEBUG({
-  dbgs() << "[sect] updateSection:"
-         << " JL=" << JLSection.getName()
-         << " Name=" << SectionName
-         << " BS=" << Section->getName()
-         << " IsCode=" << (IsCode ? "Y":"N")
-         << " IsRO="   << (IsReadOnly ? "Y":"N")
-         << "\n";
-});
+  static constexpr char kOrgPrefix[] = ".bolt.org";
+  const bool IsOrgByJL = JLSection.getName().starts_with(kOrgPrefix);
+  const bool IsOrgByName = SectionName.starts_with(OrgSecPrefix);
 
-static constexpr char kOrgPrefix[] = ".bolt.org";
-const bool IsOrgByJL   = JLSection.getName().starts_with(kOrgPrefix);
-const bool IsOrgByName = SectionName.starts_with(OrgSecPrefix);
-
-if (BC.isPPC64() && (IsOrgByJL || IsOrgByName)) {
-  LLVM_DEBUG(dbgs() << "[sect] skip setSectionID for backup section  JL='"
-                    << JLSection.getName() << "'  Name='" << SectionName << "'  BS='"
-                    << Section->getName() << "'\n");
-  return;   // never assign a code SectionID to backups
-}
+  if (BC.isPPC64() && (IsOrgByJL || IsOrgByName)) {
+    LLVM_DEBUG(dbgs() << "[sect] skip setSectionID for backup section  JL='"
+                      << JLSection.getName() << "'  Name='" << SectionName
+                      << "'  BS='" << Section->getName() << "'\n");
+    return; // never assign a code SectionID to backups
+  }
 
   Section->setSectionID(SectionID);
 }

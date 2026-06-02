@@ -84,25 +84,21 @@ static cl::opt<bool> DotToolTipCode(
     cl::desc("add basic block instructions as tool tips on nodes"), cl::Hidden,
     cl::cat(BoltCategory));
 
-cl::opt<JumpTableSupportLevel>
-JumpTables("jump-tables",
-  cl::desc("jump tables support (default=basic)"),
-  cl::init(JTS_BASIC),
-  cl::values(
-      clEnumValN(JTS_NONE, "none",
-                 "do not optimize functions with jump tables"),
-      clEnumValN(JTS_BASIC, "basic",
-                 "optimize functions with jump tables"),
-      clEnumValN(JTS_MOVE, "move",
-                 "move jump tables to a separate section"),
-      clEnumValN(JTS_SPLIT, "split",
-                 "split jump tables section into hot and cold based on "
-                 "function execution frequency"),
-      clEnumValN(JTS_AGGRESSIVE, "aggressive",
-                 "aggressively split jump tables section based on usage "
-                 "of the tables")),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+cl::opt<JumpTableSupportLevel> JumpTables(
+    "jump-tables", cl::desc("jump tables support (default=basic)"),
+    cl::init(JTS_BASIC),
+    cl::values(
+        clEnumValN(JTS_NONE, "none",
+                   "do not optimize functions with jump tables"),
+        clEnumValN(JTS_BASIC, "basic", "optimize functions with jump tables"),
+        clEnumValN(JTS_MOVE, "move", "move jump tables to a separate section"),
+        clEnumValN(JTS_SPLIT, "split",
+                   "split jump tables section into hot and cold based on "
+                   "function execution frequency"),
+        clEnumValN(JTS_AGGRESSIVE, "aggressive",
+                   "aggressively split jump tables section based on usage "
+                   "of the tables")),
+    cl::ZeroOrMore, cl::cat(BoltOptCategory));
 
 static cl::opt<bool> NoScan(
     "no-scan",
@@ -123,17 +119,15 @@ static cl::opt<bool> PrintOutputAddressRange(
         "BinaryFunction::print is called"),
     cl::Hidden, cl::cat(BoltOptCategory));
 
-cl::opt<bool>
-PrintDynoStats("dyno-stats",
-  cl::desc("print execution info based on profile"),
-  cl::cat(BoltCategory));
+cl::opt<bool> PrintDynoStats("dyno-stats",
+                             cl::desc("print execution info based on profile"),
+                             cl::cat(BoltCategory));
 
-static cl::opt<bool>
-PrintDynoStatsOnly("print-dyno-stats-only",
-  cl::desc("while printing functions output dyno-stats and skip instructions"),
-  cl::init(false),
-  cl::Hidden,
-  cl::cat(BoltCategory));
+static cl::opt<bool> PrintDynoStatsOnly(
+    "print-dyno-stats-only",
+    cl::desc(
+        "while printing functions output dyno-stats and skip instructions"),
+    cl::init(false), cl::Hidden, cl::cat(BoltCategory));
 
 cl::opt<bool>
     TimeBuild("time-build",
@@ -214,12 +208,24 @@ static std::string buildSectionName(StringRef Prefix, StringRef Name,
 static raw_ostream &operator<<(raw_ostream &OS,
                                const BinaryFunction::State State) {
   switch (State) {
-  case BinaryFunction::State::Empty:         OS << "empty"; break;
-  case BinaryFunction::State::Disassembled:  OS << "disassembled"; break;
-  case BinaryFunction::State::CFG:           OS << "CFG constructed"; break;
-  case BinaryFunction::State::CFG_Finalized: OS << "CFG finalized"; break;
-  case BinaryFunction::State::EmittedCFG:    OS << "emitted with CFG"; break;
-  case BinaryFunction::State::Emitted:       OS << "emitted"; break;
+  case BinaryFunction::State::Empty:
+    OS << "empty";
+    break;
+  case BinaryFunction::State::Disassembled:
+    OS << "disassembled";
+    break;
+  case BinaryFunction::State::CFG:
+    OS << "CFG constructed";
+    break;
+  case BinaryFunction::State::CFG_Finalized:
+    OS << "CFG finalized";
+    break;
+  case BinaryFunction::State::EmittedCFG:
+    OS << "emitted with CFG";
+    break;
+  case BinaryFunction::State::Emitted:
+    OS << "emitted";
+    break;
   }
 
   return OS;
@@ -1309,7 +1315,7 @@ Error BinaryFunction::disassemble() {
   // corresponding %pcrel_hi.
   LabelsMapType InstructionLabels;
 
-  uint64_t Size = 0; // instruction size
+  uint64_t Size = 0;           // instruction size
   bool SeenTerminator = false; // PPC64: track if we passed a return/branch
   for (uint64_t Offset = 0; Offset < getSize(); Offset += Size) {
     MCInst Instruction;
@@ -1336,8 +1342,8 @@ Error BinaryFunction::disassemble() {
       if (BC.isPPC64() && SeenTerminator) {
         LLVM_DEBUG(dbgs() << "BOLT-DEBUG: PPC64: treating bytes at offset 0x"
                           << Twine::utohexstr(Offset)
-                          << " as trailing data after terminator in "
-                          << *this << "\n");
+                          << " as trailing data after terminator in " << *this
+                          << "\n");
         break;
       }
 
@@ -1358,8 +1364,8 @@ Error BinaryFunction::disassemble() {
     }
 
     // PPC64: track terminator instructions (blr, bctr, unconditional branch)
-    if (BC.isPPC64() &&
-        (MIB->isReturn(Instruction) || MIB->isUnconditionalBranch(Instruction))) {
+    if (BC.isPPC64() && (MIB->isReturn(Instruction) ||
+                         MIB->isUnconditionalBranch(Instruction))) {
       SeenTerminator = true;
     }
 
@@ -1531,7 +1537,7 @@ Error BinaryFunction::disassemble() {
       }
     }
 
-add_instruction:
+  add_instruction:
     if (!getDWARFUnits().empty()) {
       SmallVector<DebugLineTableRowRef, 1> Rows;
       for (const auto &[_, Unit] : getDWARFUnits()) {
@@ -3976,12 +3982,13 @@ BinaryFunction::BasicBlockListType BinaryFunction::dfs() const {
   //
   // NB: we rely on the original order of entries to match.
   SmallVector<BinaryBasicBlock *> EntryPoints;
-  llvm::copy_if(BasicBlocks, std::back_inserter(EntryPoints),
-          [&](const BinaryBasicBlock *const BB) { return isEntryPoint(*BB); });
+  llvm::copy_if(
+      BasicBlocks, std::back_inserter(EntryPoints),
+      [&](const BinaryBasicBlock *const BB) { return isEntryPoint(*BB); });
   // Sort entry points by their offset to make sure we got them in the right
   // order.
   llvm::stable_sort(EntryPoints, [](const BinaryBasicBlock *const A,
-                              const BinaryBasicBlock *const B) {
+                                    const BinaryBasicBlock *const B) {
     return A->getOffset() < B->getOffset();
   });
   for (BinaryBasicBlock *const BB : reverse(EntryPoints))
@@ -4385,15 +4392,15 @@ bool BinaryFunction::isSymbolValidInScope(const SymbolRef &Symbol,
 
   // It's okay to have a zero-sized symbol in the middle of non-zero-sized
   // function.
-  if (SymbolSize == 0 && containsAddress(cantFail(Symbol.getAddress()))){
+  if (SymbolSize == 0 && containsAddress(cantFail(Symbol.getAddress()))) {
     // PPC64 ELFv2: PLT call stubs are emitted in .text as local zero-sized
     // symbols (e.g. "plt_call.*", "plt_branch.*", "__glink").
     // Although their address may fall within an existing function range,
     // they are separate call stubs and must not be treated as part of that
-    // function, otherwise function boundaries and control flow may be corrupted.
-    // Unlike other architectures where PLT entries reside in dedicated
-    // sections (e.g. .plt), PPC64 places these stubs in .text, making the
-    // distinction ambiguous without explicit filtering.
+    // function, otherwise function boundaries and control flow may be
+    // corrupted. Unlike other architectures where PLT entries reside in
+    // dedicated sections (e.g. .plt), PPC64 places these stubs in .text, making
+    // the distinction ambiguous without explicit filtering.
     if (BC.isPPC64()) {
       StringRef SymName = cantFail(Symbol.getName());
       if (SymName.contains("plt_call.") || SymName.contains("plt_branch.") ||

@@ -81,16 +81,17 @@ class BinarySection {
   std::unique_ptr<BinaryPatcher> Patcher;
 
   // Output info
-  bool IsFinalized{false};         // Has this section had output information
-                                   // finalized?
-  std::string OutputName;          // Output section name (if the section has
-                                   // been renamed)
-  uint64_t OutputAddress{0};       // Section address for the rewritten binary.
-  uint64_t OutputSize{0};          // Section size in the rewritten binary.
-                                   // Can exceed OutputContents with padding.
-  uint64_t OutputFileOffset{0};    // File offset in the rewritten binary file.
-  StringRef OutputContents;        // Rewritten section contents.
-  bool OwnsOutputContents = false; // Does this section own the memory for OutputContents?
+  bool IsFinalized{false};      // Has this section had output information
+                                // finalized?
+  std::string OutputName;       // Output section name (if the section has
+                                // been renamed)
+  uint64_t OutputAddress{0};    // Section address for the rewritten binary.
+  uint64_t OutputSize{0};       // Section size in the rewritten binary.
+                                // Can exceed OutputContents with padding.
+  uint64_t OutputFileOffset{0}; // File offset in the rewritten binary file.
+  StringRef OutputContents;     // Rewritten section contents.
+  bool OwnsOutputContents =
+      false; // Does this section own the memory for OutputContents?
   const uint64_t SectionNumber;    // Order in which the section was created.
   std::string SectionID;           // Unique ID used for address mapping.
                                    // Set by ExecutableFileMemoryManager.
@@ -290,7 +291,8 @@ public:
   bool isReordered() const { return IsReordered; }
   bool isAnonymous() const { return IsAnonymous; }
   bool isBackupSection() const {
-    return llvm::StringRef(Name).starts_with(".bolt.org"); }
+    return llvm::StringRef(Name).starts_with(".bolt.org");
+  }
   bool isRelro() const { return IsRelro; }
   void setRelro() { IsRelro = true; }
   unsigned getELFType() const { return ELFType; }
@@ -485,32 +487,31 @@ public:
   void flushPendingRelocations(raw_pwrite_stream &OS,
                                SymbolResolverFuncTy Resolver);
 
-/// Change contents of the section. Unless the section has a valid SectionID,
-/// the memory passed in \p NewData will be managed by the instance of
-/// BinarySection.
-void updateContents(const uint8_t *NewData, size_t NewSize) {
-  if (OwnsOutputContents && getOutputData()) {
-        llvm::errs() << "[DEBUG-BS] freeing section=" << getName()
-                 << " addr=" << (void*)getOutputData() << "\n";
-    delete[] getOutputData();
-    OwnsOutputContents = false;
+  /// Change contents of the section. Unless the section has a valid SectionID,
+  /// the memory passed in \p NewData will be managed by the instance of
+  /// BinarySection.
+  void updateContents(const uint8_t *NewData, size_t NewSize) {
+    if (OwnsOutputContents && getOutputData()) {
+      llvm::errs() << "[DEBUG-BS] freeing section=" << getName()
+                   << " addr=" << (void *)getOutputData() << "\n";
+      delete[] getOutputData();
+      OwnsOutputContents = false;
+    }
+    OutputContents = StringRef(reinterpret_cast<const char *>(NewData),
+                               NewData ? NewSize : 0);
+    OutputSize = NewSize;
+    IsFinalized = true;
+    // We own the buffer only if it was explicitly allocated for us.
+    // We do NOT own it if:
+    // - NewData is null (destructor call)
+    // - section has a SectionRef (buffer owned by input file mapping)
+    // - section is a backup section (buffer owned by original section)
+    // - buffer is the same as original Contents (shared pointer)
+    OwnsOutputContents =
+        (NewData != nullptr) && !hasValidSectionID() && !hasSectionRef() &&
+        !isBackupSection() &&
+        (reinterpret_cast<const char *>(NewData) != Contents.data());
   }
-  OutputContents = StringRef(reinterpret_cast<const char *>(NewData),
-                             NewData ? NewSize : 0);
-  OutputSize = NewSize;
-  IsFinalized = true;
-  // We own the buffer only if it was explicitly allocated for us.
-  // We do NOT own it if:
-  // - NewData is null (destructor call)
-  // - section has a SectionRef (buffer owned by input file mapping)
-  // - section is a backup section (buffer owned by original section)
-  // - buffer is the same as original Contents (shared pointer)
-  OwnsOutputContents = (NewData != nullptr) &&
-                       !hasValidSectionID() &&
-                       !hasSectionRef() &&
-                       !isBackupSection() &&
-                       (reinterpret_cast<const char *>(NewData) != Contents.data());
-}
 
   /// When writing section contents, add \p PaddingSize zero bytes at the end.
   void addPadding(uint64_t PaddingSize) { OutputSize += PaddingSize; }

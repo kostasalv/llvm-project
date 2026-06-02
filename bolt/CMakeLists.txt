@@ -17,12 +17,12 @@ set(BOLT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(BOLT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
 set(CMAKE_CXX_STANDARD 17)
 
-# Add path for custom modules.
+#Add path for custom modules.
 list(INSERT CMAKE_MODULE_PATH 0 "${BOLT_SOURCE_DIR}/cmake/modules")
 
 include(GNUInstallDirs)
 
-# standalone build, copied from clang
+#standalone build, copied from clang
 if(BOLT_BUILT_STANDALONE)
   set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
   set(CMAKE_CXX_STANDARD_REQUIRED YES)
@@ -31,7 +31,7 @@ if(BOLT_BUILT_STANDALONE)
   if(NOT MSVC_IDE)
     set(LLVM_ENABLE_ASSERTIONS ${ENABLE_ASSERTIONS}
       CACHE BOOL "Enable assertions")
-    # Assertions should follow llvm-config's.
+#Assertions should follow llvm - config's.
     mark_as_advanced(LLVM_ENABLE_ASSERTIONS)
   endif()
 
@@ -42,7 +42,7 @@ if(BOLT_BUILT_STANDALONE)
   find_program(LLVM_TABLEGEN_EXE "llvm-tblgen" ${LLVM_TOOLS_BINARY_DIR}
     NO_DEFAULT_PATH)
 
-  # They are used as destination of target generators.
+#They are used as destination of target generators.
   set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin)
   set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib${LLVM_LIBDIR_SUFFIX})
 
@@ -60,8 +60,8 @@ if(BOLT_BUILT_STANDALONE)
   set( CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_INSTALL_LIBDIR}/${LLVM_LIBDIR_SUFFIX}")
 endif() # standalone
 
-# Determine default set of targets to build -- the intersection of
-# those BOLT supports and those LLVM is targeting.
+#Determine default set of targets to build-- the intersection of
+#those BOLT supports and those LLVM is targeting.
 set(BOLT_TARGETS_TO_BUILD_all "AArch64;X86;RISCV;PowerPC")
 set(BOLT_TARGETS_TO_BUILD_default)
 foreach (tgt ${BOLT_TARGETS_TO_BUILD_all})
@@ -70,8 +70,8 @@ foreach (tgt ${BOLT_TARGETS_TO_BUILD_all})
   endif()
 endforeach()
 
-# Allow the user to specify the BOLT targets, and then check that LLVM
-# is indeed targeting those.
+#Allow the user to specify the BOLT targets, and then check that LLVM
+#is indeed targeting those.
 set(BOLT_TARGETS_TO_BUILD "${BOLT_TARGETS_TO_BUILD_default}"
   CACHE STRING "Targets for BOLT to support.")
 if (NOT BOLT_TARGETS_TO_BUILD)
@@ -95,7 +95,7 @@ if ((CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"
 endif()
 option(BOLT_ENABLE_RUNTIME "Enable BOLT runtime" ${BOLT_ENABLE_RUNTIME_default})
 if (BOLT_ENABLE_RUNTIME)
-  # Some systems prevent reading /proc/self/map_files
+#Some systems prevent reading / proc / self / map_files
   execute_process(COMMAND ls /proc/self/map_files
     RESULT_VARIABLE LS OUTPUT_QUIET ERROR_QUIET)
   if (LS)

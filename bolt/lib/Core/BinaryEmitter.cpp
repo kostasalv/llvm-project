@@ -40,13 +40,10 @@ extern cl::opt<bool> PreserveBlocksAlignment;
 cl::opt<bool> AlignBlocks("align-blocks", cl::desc("align basic blocks"),
                           cl::cat(BoltOptCategory));
 
-static cl::list<std::string>
-BreakFunctionNames("break-funcs",
-  cl::CommaSeparated,
-  cl::desc("list of functions to core dump on (debugging)"),
-  cl::value_desc("func1,func2,func3,..."),
-  cl::Hidden,
-  cl::cat(BoltCategory));
+static cl::list<std::string> BreakFunctionNames(
+    "break-funcs", cl::CommaSeparated,
+    cl::desc("list of functions to core dump on (debugging)"),
+    cl::value_desc("func1,func2,func3,..."), cl::Hidden, cl::cat(BoltCategory));
 
 static cl::list<std::string>
     FunctionPadSpec("pad-funcs", cl::CommaSeparated,
@@ -70,11 +67,10 @@ static cl::opt<bool> PrintJumpTables("print-jump-tables",
                                      cl::desc("print jump tables"), cl::Hidden,
                                      cl::cat(BoltCategory));
 
-static cl::opt<bool>
-X86AlignBranchBoundaryHotOnly("x86-align-branch-boundary-hot-only",
-  cl::desc("only apply branch boundary alignment in hot code"),
-  cl::init(true),
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> X86AlignBranchBoundaryHotOnly(
+    "x86-align-branch-boundary-hot-only",
+    cl::desc("only apply branch boundary alignment in hot code"),
+    cl::init(true), cl::cat(BoltOptCategory));
 
 size_t padFunction(std::map<std::string, size_t> &FunctionPadding,
                    const cl::list<std::string> &Spec,

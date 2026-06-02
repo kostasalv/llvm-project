@@ -40,13 +40,11 @@
 #include <iterator>
 #include <unordered_set>
 #define DEBUG_TYPE "bolt"
+#include "llvm/Object/ELF.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Object/ELF.h"
 
 using namespace llvm;
-
-
 
 namespace opts {
 
@@ -58,23 +56,19 @@ static cl::opt<bool>
                 cl::Hidden, cl::cat(BoltCategory));
 
 static cl::opt<bool>
-PrintDebugInfo("print-debug-info",
-  cl::desc("print debug info when printing functions"),
-  cl::Hidden,
-  cl::ZeroOrMore,
-  cl::cat(BoltCategory));
+    PrintDebugInfo("print-debug-info",
+                   cl::desc("print debug info when printing functions"),
+                   cl::Hidden, cl::ZeroOrMore, cl::cat(BoltCategory));
 
 cl::opt<bool> PrintRelocations(
     "print-relocations",
     cl::desc("print relocations when printing functions/objects"), cl::Hidden,
     cl::cat(BoltCategory));
 
-static cl::opt<bool>
-PrintMemData("print-mem-data",
-  cl::desc("print memory data annotations when printing functions"),
-  cl::Hidden,
-  cl::ZeroOrMore,
-  cl::cat(BoltCategory));
+static cl::opt<bool> PrintMemData(
+    "print-mem-data",
+    cl::desc("print memory data annotations when printing functions"),
+    cl::Hidden, cl::ZeroOrMore, cl::cat(BoltCategory));
 
 cl::opt<std::string> CompDirOverride(
     "comp-dir-override",
@@ -2336,21 +2330,21 @@ BinarySection &
 BinaryContext::registerOrUpdateSection(const Twine &Name, unsigned ELFType,
                                        unsigned ELFFlags, uint8_t *Data,
                                        uint64_t Size, unsigned Alignment) {
- // --- Common locals
- std::string NameStorage = Name.str();
- llvm::StringRef NameRef(NameStorage);
- static constexpr char kOrgPrefix[] = ".bolt.org";
+  // --- Common locals
+  std::string NameStorage = Name.str();
+  llvm::StringRef NameRef(NameStorage);
+  static constexpr char kOrgPrefix[] = ".bolt.org";
 
- // --- EARLY SANITIZATION for backups ("org") ---
- // Ensure .bolt.org.* is non-alloc, non-exec, data-like, and excluded.
- if (isPPC64() && NameRef.starts_with(kOrgPrefix)) {
-   ELFFlags &= ~(ELF::SHF_ALLOC | ELF::SHF_EXECINSTR);
-   ELFFlags |=  (ELF::SHF_EXCLUDE);
-   ELFType    =  ELF::SHT_PROGBITS;
-   LLVM_DEBUG(llvm::dbgs()
-     << "[reg] ORG-SANITIZE name=" << NameRef
-     << " flags(out)=0x" << llvm::format_hex(ELFFlags, 8) << "\n");
- }
+  // --- EARLY SANITIZATION for backups ("org") ---
+  // Ensure .bolt.org.* is non-alloc, non-exec, data-like, and excluded.
+  if (isPPC64() && NameRef.starts_with(kOrgPrefix)) {
+    ELFFlags &= ~(ELF::SHF_ALLOC | ELF::SHF_EXECINSTR);
+    ELFFlags |= (ELF::SHF_EXCLUDE);
+    ELFType = ELF::SHT_PROGBITS;
+    LLVM_DEBUG(llvm::dbgs()
+               << "[reg] ORG-SANITIZE name=" << NameRef << " flags(out)=0x"
+               << llvm::format_hex(ELFFlags, 8) << "\n");
+  }
 
   auto NamedSections = getSectionByName(Name);
 
@@ -2359,15 +2353,17 @@ BinaryContext::registerOrUpdateSection(const Twine &Name, unsigned ELFType,
     if (std::next(NamedSections.begin()) != NamedSections.end()) {
       LLVM_DEBUG({
         dbgs() << "[sect] DUP-NAME (" << Name << ") count="
-               << std::distance(NamedSections.begin(), NamedSections.end()) << "\n";
+               << std::distance(NamedSections.begin(), NamedSections.end())
+               << "\n";
         for (auto &P : NamedSections)
-          dbgs() << "  idx=" << P.first
-                 << " addr=0x" << format_hex(P.second->getAddress(), 10)
-                 << " size=0x" << format_hex(P.second->getSize(), 10)
-                 << " flags=0x" << format_hex(P.second->getELFFlags(), 6)
-                 << " type=0x"  << format_hex(P.second->getELFType(), 6) << "\n";
+          dbgs() << "  idx=" << P.first << " addr=0x"
+                 << format_hex(P.second->getAddress(), 10) << " size=0x"
+                 << format_hex(P.second->getSize(), 10) << " flags=0x"
+                 << format_hex(P.second->getELFFlags(), 6) << " type=0x"
+                 << format_hex(P.second->getELFType(), 6) << "\n";
       });
-      llvm::report_fatal_error("[sect] duplicate section objects with same name");
+      llvm::report_fatal_error(
+          "[sect] duplicate section objects with same name");
     }
 
     // 2) Now safe to assert uniqueness
@@ -2381,7 +2377,6 @@ BinaryContext::registerOrUpdateSection(const Twine &Name, unsigned ELFType,
     Section->update(Data, Size, Alignment, ELFType, ELFFlags);
     LLVM_DEBUG(dbgs() << *Section << "\n");
 
-
     if (isELF())
       assert(WasAlloc == Section->isAllocatable() &&
              "can't change section allocation status");
@@ -2394,9 +2389,8 @@ BinaryContext::registerOrUpdateSection(const Twine &Name, unsigned ELFType,
       new BinarySection(*this, Name, Data, Size, Alignment, ELFType, ELFFlags));
 }
 
-
 void BinaryContext::deregisterSectionName(const BinarySection &Section) {
-    LLVM_DEBUG(dbgs() << "[sect] erase-name " << Section.getName()
+  LLVM_DEBUG(dbgs() << "[sect] erase-name " << Section.getName()
                     << " ptr=" << &Section << "\n");
   auto NameRange = NameToSection.equal_range(Section.getName().str());
   while (NameRange.first != NameRange.second) {
@@ -2451,16 +2445,15 @@ bool BinaryContext::deregisterSection(BinarySection &Section) {
 
 void BinaryContext::renameSection(BinarySection &Section,
                                   const Twine &NewName) {
-DEBUG_WITH_TYPE("bolt-flags", {
-  unsigned F = Section.getELFFlags();
-  dbgs() << "[flags] renameSection " << Section.getName()
-         << " -> " << NewName << "\n"
-         << "        before Flags=0x" << llvm::format_hex(F, 8)
-         << " (ALLOC=" << ((F & ELF::SHF_ALLOC) ? "yes":"no")
-         << ", EXEC="  << ((F & ELF::SHF_EXECINSTR) ? "yes":"no")
-         << ", EXCL="  << ((F & ELF::SHF_EXCLUDE) ? "yes":"no")
-         << ")\n";
-});
+  DEBUG_WITH_TYPE("bolt-flags", {
+    unsigned F = Section.getELFFlags();
+    dbgs() << "[flags] renameSection " << Section.getName() << " -> " << NewName
+           << "\n"
+           << "        before Flags=0x" << llvm::format_hex(F, 8)
+           << " (ALLOC=" << ((F & ELF::SHF_ALLOC) ? "yes" : "no")
+           << ", EXEC=" << ((F & ELF::SHF_EXECINSTR) ? "yes" : "no")
+           << ", EXCL=" << ((F & ELF::SHF_EXCLUDE) ? "yes" : "no") << ")\n";
+  });
   auto Itr = Sections.find(&Section);
   assert(Itr != Sections.end() && "Section must exist to be renamed.");
   Sections.erase(Itr);
@@ -2470,15 +2463,14 @@ DEBUG_WITH_TYPE("bolt-flags", {
   Section.Name = NewName.str();
   Section.setOutputName(Section.Name);
 
-
   // --- org-sanitize block (insert here) ---
   static constexpr char kOrgPrefix[] = ".bolt.org";
   llvm::StringRef NewNameRef(Section.Name);
 
-  if (isPPC64() && NewNameRef.starts_with(kOrgPrefix)) {  
+  if (isPPC64() && NewNameRef.starts_with(kOrgPrefix)) {
     unsigned F = Section.getELFFlags();
     F &= ~(llvm::ELF::SHF_ALLOC | llvm::ELF::SHF_EXECINSTR);
-    F |=  llvm::ELF::SHF_EXCLUDE;
+    F |= llvm::ELF::SHF_EXCLUDE;
 
     // Mutate the SAME object; don't re-enter the factory.
     Section.update(/*Data=*/Section.getData(),
@@ -2492,11 +2484,11 @@ DEBUG_WITH_TYPE("bolt-flags", {
 
     DEBUG_WITH_TYPE("bolt-flags", {
       const unsigned NF = Section.getELFFlags();
-      dbgs() << "[renameSection] org-sanitize " << NewNameRef
-             << " flags=0x" << llvm::format_hex(NF, 8)
-             << " (ALLOC=" << ((NF & llvm::ELF::SHF_ALLOC) ? "yes":"no")
-             << ", EXEC="  << ((NF & llvm::ELF::SHF_EXECINSTR) ? "yes":"no")
-             << ", EXCL="  << ((NF & llvm::ELF::SHF_EXCLUDE) ? "yes":"no")
+      dbgs() << "[renameSection] org-sanitize " << NewNameRef << " flags=0x"
+             << llvm::format_hex(NF, 8)
+             << " (ALLOC=" << ((NF & llvm::ELF::SHF_ALLOC) ? "yes" : "no")
+             << ", EXEC=" << ((NF & llvm::ELF::SHF_EXECINSTR) ? "yes" : "no")
+             << ", EXCL=" << ((NF & llvm::ELF::SHF_EXCLUDE) ? "yes" : "no")
              << ")\n";
     });
   }
@@ -2504,15 +2496,14 @@ DEBUG_WITH_TYPE("bolt-flags", {
   NameToSection.insert(std::make_pair(Section.Name, &Section));
   Sections.insert(&Section);
 
-DEBUG_WITH_TYPE("bolt-flags", {
-  unsigned F2 = Section.getELFFlags();
-  dbgs() << "[flags] renameSection done for " << NewName << "\n"
-         << "        after Flags=0x" << llvm::format_hex(F2, 8)
-         << " (ALLOC=" << ((F2 & ELF::SHF_ALLOC) ? "yes":"no")
-         << ", EXEC="  << ((F2 & ELF::SHF_EXECINSTR) ? "yes":"no")
-         << ", EXCL="  << ((F2 & ELF::SHF_EXCLUDE) ? "yes":"no")
-         << ")\n";
-});
+  DEBUG_WITH_TYPE("bolt-flags", {
+    unsigned F2 = Section.getELFFlags();
+    dbgs() << "[flags] renameSection done for " << NewName << "\n"
+           << "        after Flags=0x" << llvm::format_hex(F2, 8)
+           << " (ALLOC=" << ((F2 & ELF::SHF_ALLOC) ? "yes" : "no")
+           << ", EXEC=" << ((F2 & ELF::SHF_EXECINSTR) ? "yes" : "no")
+           << ", EXCL=" << ((F2 & ELF::SHF_EXCLUDE) ? "yes" : "no") << ")\n";
+  });
 }
 
 void BinaryContext::printSections(raw_ostream &OS) const {
