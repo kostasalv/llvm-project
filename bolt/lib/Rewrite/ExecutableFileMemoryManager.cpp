@@ -64,10 +64,13 @@ struct SectionAllocInfo {
 struct AllocInfo {
   SmallVector<SectionAllocInfo, 8> AllocatedSections;
 
-  ~AllocInfo() {
-    for (auto &Section : AllocatedSections)
-      deallocate_buffer(Section.Address, Section.Size, Section.Alignment);
+~AllocInfo() {
+  for (auto &Sec : AllocatedSections) {
+    llvm::errs() << "[DEBUG-JIT] freeing addr=" << Sec.Address
+                 << " size=" << Sec.Size << "\n";
+    deallocate_buffer(Sec.Address, Sec.Size, Sec.Alignment);
   }
+}
 
   SectionAllocInfo allocateSection(const jitlink::Section &Section) {
     auto Size = JITLinkLinker::sectionSize(Section);

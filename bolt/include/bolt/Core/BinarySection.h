@@ -489,6 +489,8 @@ public:
 /// BinarySection.
 void updateContents(const uint8_t *NewData, size_t NewSize) {
   if (OwnsOutputContents && getOutputData()) {
+        llvm::errs() << "[DEBUG-BS] freeing section=" << getName()
+                 << " addr=" << (void*)getOutputData() << "\n";
     delete[] getOutputData();
     OwnsOutputContents = false;
   }
