@@ -92,6 +92,7 @@ class BinarySection {
   StringRef OutputContents;     // Rewritten section contents.
   bool OwnsOutputContents =
       false; // Does this section own the memory for OutputContents?
+  bool OwnershipExplicit = false; // Was the ownership of OutputContents explicitly set?
   const uint64_t SectionNumber;    // Order in which the section was created.
   std::string SectionID;           // Unique ID used for address mapping.
                                    // Set by ExecutableFileMemoryManager.
@@ -466,7 +467,12 @@ public:
   }
   void setIndex(uint32_t I) { Index = I; }
   void setOutputName(const Twine &Name) { OutputName = Name.str(); }
-  void setExternallyOwnedContents() { OwnsOutputContents = false; }
+  void setExternallyOwnedContents() {
+    OwnsOutputContents = false;
+    OwnershipExplicit = true;}
+  void setOwnedContents() {
+    OwnsOutputContents = true;
+    OwnershipExplicit = true;}
   void setAnonymous(bool Flag) { IsAnonymous = Flag; }
   bool isLinkOnly() const { return IsLinkOnly; }
   void setLinkOnly() { IsLinkOnly = true; }
@@ -505,10 +511,12 @@ public:
     // - section has a SectionRef (buffer owned by input file mapping)
     // - section is a backup section (buffer owned by original section)
     // - buffer is the same as original Contents (shared pointer)
+    if (!OwnershipExplicit){
     OwnsOutputContents =
         (NewData != nullptr) && !hasValidSectionID() && !hasSectionRef() &&
         !isBackupSection() &&
         (reinterpret_cast<const char *>(NewData) != Contents.data());
+    }
   }
 
   /// When writing section contents, add \p PaddingSize zero bytes at the end.
