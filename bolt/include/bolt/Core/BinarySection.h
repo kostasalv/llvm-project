@@ -491,16 +491,24 @@ public:
   /// the memory passed in \p NewData will be managed by the instance of
   /// BinarySection.
   void updateContents(const uint8_t *NewData, size_t NewSize) {
-    if (getOutputData() && !hasValidSectionID() &&
-        (!hasSectionRef() ||
-         OutputContents.data() != getContentsOrQuit(Section).data())) {
+    if (OwnsOutputContents && getOutputData()) {
       delete[] getOutputData();
+      OwnsOutputContents = false;
     }
-
     OutputContents = StringRef(reinterpret_cast<const char *>(NewData),
                                NewData ? NewSize : 0);
     OutputSize = NewSize;
     IsFinalized = true;
+    // We own the buffer only if it was explicitly allocated for us.
+    // We do NOT own it if:
+    // - NewData is null (destructor call)
+    // - section has a SectionRef (buffer owned by input file mapping)
+    // - section is a backup section (buffer owned by original section)
+    // - buffer is the same as original Contents (shared pointer)
+    OwnsOutputContents =
+        (NewData != nullptr) && !hasValidSectionID() && !hasSectionRef() &&
+        !isBackupSection() &&
+        (reinterpret_cast<const char *>(NewData) != Contents.data());
   }
 
   /// When writing section contents, add \p PaddingSize zero bytes at the end.
