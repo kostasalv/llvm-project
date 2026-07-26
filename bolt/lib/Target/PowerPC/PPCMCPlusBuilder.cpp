@@ -664,11 +664,20 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
   auto isR1 = [](unsigned R) { return R == PPC::X1 || R == PPC::R1; };
   auto isR2 = [](unsigned R) { return R == PPC::X2 || R == PPC::R2; };
 
-  // ld r2, 24(r1) -> (dst, imm, base)
+  // ld r2, 24(r1) -> operands: (dst, imm/expr, base)
+  // When compiled with --emit-relocs the immediate may be symbolized (isExpr),
+  // so accept either an immediate of 24 or any expression (which will encode
+  // the same TOC save slot offset via a relocation).
   if (!I.getOperand(0).isReg() || !isR2(I.getOperand(0).getReg()))
     return false;
-  if (!I.getOperand(1).isImm() || I.getOperand(1).getImm() != 24)
-    return false;
+  // Operand 1 is the offset: accept imm==24 or any symbolized expression.
+  const MCOperand &OffOp = I.getOperand(1);
+  if (OffOp.isImm()) {
+    if (OffOp.getImm() != 24)
+      return false;
+  } else if (!OffOp.isExpr()) {
+    return false; // unexpected operand kind
+  }
   if (!I.getOperand(2).isReg() || !isR1(I.getOperand(2).getReg()))
     return false;
 

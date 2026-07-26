@@ -2860,6 +2860,8 @@ bool RewriteInstance::analyzeRelocation(
     case ELF::R_PPC64_TOC16_LO:
     case ELF::R_PPC64_TOC16_HI:
     case ELF::R_PPC64_TOC16_HA:
+    case ELF::R_PPC64_TOC16_DS:
+    case ELF::R_PPC64_TOC16_LO_DS:
 
     // GOT/TLS pointer materialization
     case ELF::R_PPC64_GOT16:
