@@ -1748,6 +1748,9 @@ public:
       --I;
       Offset = I->first;
     }
+    // PPC64 ELFv2: skip CFI referencing offsets inside data islands.
+    if (BC.isPPC64() && I->first != Offset && getSizeOfDataInCodeAt(Offset) > 0)
+      return {};
     assert(I->first == Offset && "CFI pointing to unknown instruction");
     if (I == Instructions.begin())
       return {};
