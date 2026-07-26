@@ -540,8 +540,6 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
         auto NextI = std::next(I);
         if (NextI != E && BC.MIB->isNoop(*NextI)) {
           NeedSlot = false;
-          LLVM_DEBUG(dbgs() << "BOLT-DEBUG: post-call NOP already present in "
-                            << BF.getPrintName() << "\n");
         }
 
         if (NeedSlot) {
@@ -550,30 +548,33 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
           MCInst Nop;
           BC.MIB->createNoop(Nop);
           Streamer.emitInstruction(Nop, *BC.STI);
-        } else {
-          LLVM_DEBUG(dbgs() << "BOLT-DEBUG: skipping NOP injection in "
-                            << BF.getPrintName()
-                            << " (next=" << BC.MII->getName(NextI->getOpcode())
-                            << ")\n");
         }
 
-        // DIAGNOSTIC: always print context around calls
-        // so we can trace the failing call site at P=0x17808630
-        dbgs() << "PPC64-CALL-TRACE: func=" << BF.getPrintName()
-               << " opcode=" << BC.MII->getName(Instr.getOpcode())
-               << " isCall=" << BC.MIB->isCall(Instr)
-               << " isPPC64=" << BC.isPPC64()
-               << " NeedSlot=" << NeedSlot
-               << " nextOp=";
-        auto NextI2 = std::next(I);
-        if (NextI2 != E)
-          dbgs() << BC.MII->getName(NextI2->getOpcode())
-                 << "(isNoop=" << BC.MIB->isNoop(*NextI2) << ")"
-                 << "(isTOCRestore=" << BC.MIB->isTOCRestoreAfterCall(*NextI2)
-                 << ")";
-        else
-          dbgs() << "<end>";
-        dbgs() << "\n";
+        // DIAGNOSTIC: log every call with full context including section offset
+        // to identify which function/call ends up at the failing block offset
+        // (e.g. block+0x8630 that triggers the JITLink NOP assertion)
+        {
+          // Get current section offset via fragment offset sum
+          uint64_t SecOffset = 0;
+          if (auto *Sec = Streamer.getCurrentSectionOnly()) {
+            for (auto &Frag : *Sec)
+              SecOffset += Frag.getSize();
+          }
+          dbgs() << "PPC64-CALL-TRACE:"
+                 << " secoff=0x" << Twine::utohexstr(SecOffset)
+                 << " func=" << BF.getPrintName()
+                 << " opcode=" << BC.MII->getName(Instr.getOpcode())
+                 << " NeedSlot=" << NeedSlot
+                 << " nextOp=";
+          if (NextI != E)
+            dbgs() << BC.MII->getName(NextI->getOpcode())
+                   << "(isNoop=" << BC.MIB->isNoop(*NextI) << ")"
+                   << "(isTOCRestore="
+                   << BC.MIB->isTOCRestoreAfterCall(*NextI) << ")";
+          else
+            dbgs() << "<end>";
+          dbgs() << "\n";
+        }
       }
     }
   }
