@@ -106,8 +106,9 @@ bool PPCMCPlusBuilder::hasPCRelOperand(const MCInst &I) const {
 int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   switch (I.getOpcode()) {
   // Relative direct call/branch – target is operand #0 in MC (Imm/Expr)
-  case PPC::BL: // relative call
-  case PPC::B:  // unconditional relative branch
+  case PPC::BL:  // relative call (32-bit)
+  case PPC::BL8: // relative call (64-bit)
+  case PPC::B:   // unconditional relative branch
     return 0;
 
   // Conditional relative branch: BO, BI, BD
@@ -116,6 +117,7 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
 
   // Absolute branches/calls (AA=1) — no PC-relative operand
   case PPC::BLA:
+  case PPC::BLA8:
   case PPC::BA:
     return -1;
 
@@ -172,9 +174,12 @@ bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
 
 bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
   switch (I.getOpcode()) {
-  case PPC::BL:    // direct relative call
-  case PPC::BLA:   // direct absolute call
-  case PPC::BCTRL: // indirect call via CTR
+  case PPC::BL:     // direct relative call (32-bit)
+  case PPC::BL8:    // direct relative call (64-bit)
+  case PPC::BLA:    // direct absolute call (32-bit)
+  case PPC::BLA8:   // direct absolute call (64-bit)
+  case PPC::BCTRL:  // indirect call via CTR (32-bit)
+  case PPC::BCTRL8: // indirect call via CTR (64-bit)
     return true;
   default:
     return false;
@@ -183,7 +188,8 @@ bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
 
 bool PPCMCPlusBuilder::isIndirectCall(const MCInst &I) const {
   switch (I.getOpcode()) {
-  case PPC::BCTRL: // branch to CTR with link - indirect call
+  case PPC::BCTRL:  // branch to CTR with link (32-bit)
+  case PPC::BCTRL8: // branch to CTR with link (64-bit)
     return true;
   default:
     return false;
