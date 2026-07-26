@@ -649,13 +649,21 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
         dbgs() << ", ";
       const auto &Op = I.getOperand(k);
       if (Op.isReg())
-        dbgs() << Op.getReg(); // will print the reg number, not pretty
+        dbgs() << "reg:" << Op.getReg();
       else if (Op.isImm())
-        dbgs() << Op.getImm();
+        dbgs() << "imm:" << Op.getImm();
+      else if (Op.isExpr())
+        dbgs() << "expr";
+      else if (Op.isInst())
+        dbgs() << "inst";
+      else if (Op.isSFPImm())
+        dbgs() << "sfpimm";
+      else if (Op.isDFPImm())
+        dbgs() << "dfpimm";
       else
         dbgs() << "<op" << k << ">";
     }
-    dbgs() << ")\n";
+    dbgs() << ") numops=" << I.getNumOperands() << "\n";
   });
 
   if (I.getOpcode() != PPC::LD)
