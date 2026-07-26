@@ -1418,14 +1418,15 @@ Error BinaryFunction::disassemble() {
         // base. Valid entries must satisfy:
         //   1. Non-zero
         //   2. 4-byte aligned (instructions are word-aligned on PPC64)
-        //   3. < function size (must point within this function)
+        //   3. abs(entry) < function size (may be negative for backward jumps)
         // The first word that fails marks the code resume point.
         uint64_t CodeResume = DataStart;
         for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
-          uint32_t Word =
-              support::endian::read32le(FunctionData.data() + ScanOff);
-          if (Word == 0 || (Word & 3) != 0 || Word >= FuncSize)
+          int32_t Word = static_cast<int32_t>(
+              support::endian::read32le(FunctionData.data() + ScanOff));
+          uint32_t AbsWord = static_cast<uint32_t>(Word < 0 ? -Word : Word);
+          if (Word == 0 || (AbsWord & 3) != 0 || AbsWord >= FuncSize)
             break;
           CodeResume = ScanOff + 4;
         }
