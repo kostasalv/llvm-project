@@ -512,43 +512,42 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
       LLVM_DEBUG(dbgs() << "EMIT " << BC.MII->getName(Instr.getOpcode())
                         << "\n");
 
+      // PPC64 ELFv2: Skip TOC-restore instructions that immediately follow
+      // calls. The linker will rewrite the post-call NOP to TOC-restore if
+      // needed.
+      if (BC.isPPC64() && BC.MIB->isTOCRestoreAfterCall(Instr)) {
+        // Check if previous instruction exists and is a call
+        if (I != BB->begin()) {
+          auto PrevI = std::prev(I);
+          if (BC.MIB->isCall(*PrevI)) {
+            LLVM_DEBUG(dbgs()
+                       << "BOLT-DEBUG: skipping TOC-restore after call in "
+                       << BF.getPrintName() << "\n");
+            continue;
+          }
+        }
+      }
+
       Streamer.emitInstruction(Instr, *BC.STI);
 
-      if (BC.isPPC64() && BC.MIB->isTOCRestoreAfterCall(Instr))
-        LLVM_DEBUG(dbgs() << "EMIT is TOC-restore\n");
-
-      // --- PPC64 ELFv2: guarantee a post-call NOP (call slot)
+      // PPC64 ELFv2: Ensure a NOP (call slot) after every call instruction.
+      // JITLink will rewrite this NOP to TOC-restore for external calls.
       if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
         bool NeedSlot = true;
-        LLVM_DEBUG(dbgs() << "PPC emit: call, considering slot after\n");
 
-        // If the next IR instruction exists and is already a NOP or TOC-restore
-        // , don't inject.
+        // Don't inject if next instruction is already a NOP (not TOC-restore,
+        // since we skip those above)
         auto NextI = std::next(I);
-        LLVM_DEBUG({
-          dbgs() << "PPC emit: CALL seen: next=";
-          if (NextI == E)
-            dbgs() << "<end>\n";
-          else
-            dbgs() << BC.MII->getName(NextI->getOpcode())
-                   << (BC.MIB->isTOCRestoreAfterCall(*NextI)
-                           ? " (TOC restore)\n"
-                           : "\n");
-        });
-        if (NextI != E &&
-            (BC.MIB->isNoop(*NextI) || BC.MIB->isTOCRestoreAfterCall(*NextI))) {
+        if (NextI != E && BC.MIB->isNoop(*NextI)) {
           NeedSlot = false;
         }
 
         if (NeedSlot) {
-          LLVM_DEBUG(dbgs() << "PPC emit: inserting post-call NOP\n");
-          MCInst N;
-          BC.MIB->createNoop(N);
-          Streamer.emitInstruction(N, *BC.STI);
-          LLVM_DEBUG(dbgs() << "PPC: inserted NOP after call at "
+          LLVM_DEBUG(dbgs() << "BOLT-DEBUG: inserting post-call NOP in "
                             << BF.getPrintName() << "\n");
-        } else {
-          LLVM_DEBUG(dbgs() << "PPC emit: post-call NOP not needed\n");
+          MCInst Nop;
+          BC.MIB->createNoop(Nop);
+          Streamer.emitInstruction(Nop, *BC.STI);
         }
       }
     }
