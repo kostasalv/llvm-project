@@ -35,6 +35,7 @@
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/GenericDomTreeConstruction.h"
 #include "llvm/Support/GenericLoopInfoImpl.h"
 #include "llvm/Support/GraphWriter.h"
@@ -887,6 +888,17 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
     return IndirectBranchType::UNKNOWN;
   }
 
+  // PPC64 ELFv2: GCC emits PIC switch tables as an array of signed 32-bit
+  // word offsets embedded inside the function body immediately after bctr.
+  // analyzeMemoryAt() is x86-only so the normal jump table discovery path
+  // cannot be used. Return UNKNOWN to skip full JT processing.
+  // The data island is marked early in disassemble() so the disassembler
+  // skips the data bytes before CFI attachment runs.
+  if (BC.isPPC64() &&
+      BranchType == IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE) {
+    return IndirectBranchType::UNKNOWN;
+  }
+
   auto getExprValue = [&](const MCExpr *Expr) {
     const MCSymbol *TargetSym;
     uint64_t TargetOffset;
@@ -1388,6 +1400,49 @@ Error BinaryFunction::disassemble() {
     if (BC.isPPC64() && (MIB->isReturn(Instruction) ||
                          MIB->isUnconditionalBranch(Instruction))) {
       SeenTerminator = true;
+
+      // PPC64 ELFv2: GCC embeds PIC switch jump table data immediately after
+      // a bctr instruction. Detect the pattern here, during the byte-by-byte
+      // disassembly scan, and mark the next offset as a data island so the
+      // loop skips it instead of decoding data words as instructions.
+      // This must be done here (not in scanExternalRefs) because by the time
+      // scanExternalRefs runs, the data has already been decoded as
+      // instructions and CFI attachment will assert on the spurious offsets.
+      if (MIB->isIndirectBranch(Instruction) &&
+          MIB->isPICJumpTableBctr(Instruction, Instructions.begin(),
+                                  Instructions.end())) {
+        const uint64_t DataStart = Offset + Size;
+        const uint64_t FuncSize = getSize();
+        // Scan forward through raw function bytes to find where the PIC jump
+        // table ends. Each entry is a signed 32-bit word offset from the table
+        // base. Valid entries must satisfy:
+        //   1. Non-zero
+        //   2. 4-byte aligned (instructions are word-aligned on PPC64)
+        //   3. < function size (must point within this function)
+        // The first word that fails marks the code resume point.
+        uint64_t CodeResume = DataStart;
+        for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
+             ScanOff += 4) {
+          uint32_t Word =
+              support::endian::read32le(FunctionData.data() + ScanOff);
+          if (Word == 0 || (Word & 3) != 0 || Word >= FuncSize)
+            break;
+          CodeResume = ScanOff + 4;
+        }
+        LLVM_DEBUG(dbgs() << "BOLT-DEBUG: PPC64 PIC jump table in " << *this
+                          << ": data island [0x" << Twine::utohexstr(DataStart)
+                          << ", 0x" << Twine::utohexstr(CodeResume)
+                          << "), code resumes at 0x"
+                          << Twine::utohexstr(CodeResume) << "\n");
+        markDataAtOffset(DataStart);
+        if (CodeResume > DataStart && CodeResume < FuncSize) {
+          markCodeAtOffset(CodeResume);
+          // Also register the code resume offset as an entry point so BOLT
+          // creates a basic block boundary there, enabling correct CFI
+          // attachment and control flow reconstruction.
+          addEntryPointAtOffset(CodeResume);
+        }
+      }
     }
 
     // Check integrity of LLVM assembler/disassembler.
