@@ -421,7 +421,11 @@ IndirectBranchType PPCMCPlusBuilder::analyzeIndirectBranch(
 }
 
 bool PPCMCPlusBuilder::isNoop(const MCInst &Inst) const {
-  // NOP on PPC is encoded as "ori r0, r0, 0"
+  // PPC NOP can appear as two opcode forms:
+  // 1. PPC::NOP  - the dedicated NOP pseudo-instruction (decoded from 0x60000000)
+  // 2. PPC::ORI r0, r0, 0 - the underlying encoding (emitted by createNoop)
+  if (Inst.getOpcode() == PPC::NOP)
+    return true;
   return Inst.getOpcode() == PPC::ORI && Inst.getOperand(0).isReg() &&
          Inst.getOperand(0).getReg() == PPC::R0 && Inst.getOperand(1).isReg() &&
          Inst.getOperand(1).getReg() == PPC::R0 && Inst.getOperand(2).isImm() &&
