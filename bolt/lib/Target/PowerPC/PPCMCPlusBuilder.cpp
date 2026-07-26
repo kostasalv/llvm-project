@@ -106,9 +106,18 @@ bool PPCMCPlusBuilder::hasPCRelOperand(const MCInst &I) const {
 int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   switch (I.getOpcode()) {
   // Relative direct call/branch – target is operand #0 in MC (Imm/Expr)
-  case PPC::BL:  // relative call (32-bit)
-  case PPC::BL8: // relative call (64-bit)
-  case PPC::B:   // unconditional relative branch
+  case PPC::BL:           // 32-bit relative call
+  case PPC::BL8:          // 64-bit relative call
+  case PPC::BL8_TLS:
+  case PPC::BL8_TLS_:
+  case PPC::BL8_NOP:
+  case PPC::BL8_NOP_TLS:
+  case PPC::BL8_NOTOC:
+  case PPC::BL8_NOTOC_TLS:
+  case PPC::BL8_RM:
+  case PPC::BL8_NOP_RM:
+  case PPC::BL8_NOTOC_RM:
+  case PPC::B:             // unconditional relative branch
     return 0;
 
   // Conditional relative branch: BO, BI, BD
@@ -118,6 +127,9 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   // Absolute branches/calls (AA=1) — no PC-relative operand
   case PPC::BLA:
   case PPC::BLA8:
+  case PPC::BLA8_NOP:
+  case PPC::BLA8_RM:
+  case PPC::BLA8_NOP_RM:
   case PPC::BA:
     return -1;
 
@@ -174,12 +186,49 @@ bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
 
 bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
   switch (I.getOpcode()) {
-  case PPC::BL:     // direct relative call (32-bit)
-  case PPC::BL8:    // direct relative call (64-bit)
-  case PPC::BLA:    // direct absolute call (32-bit)
-  case PPC::BLA8:   // direct absolute call (64-bit)
-  case PPC::BCTRL:  // indirect call via CTR (32-bit)
-  case PPC::BCTRL8: // indirect call via CTR (64-bit)
+  // 32-bit direct calls
+  case PPC::BL:
+  case PPC::BLA:
+  // 64-bit direct calls
+  case PPC::BL8:
+  case PPC::BL8_TLS:
+  case PPC::BL8_TLS_:
+  case PPC::BLA8:
+  case PPC::BL8_NOP:
+  case PPC::BL8_NOP_TLS:
+  case PPC::BLA8_NOP:
+  case PPC::BL8_NOTOC:
+  case PPC::BL8_NOTOC_TLS:
+  case PPC::BL8_RM:
+  case PPC::BLA8_RM:
+  case PPC::BL8_NOP_RM:
+  case PPC::BLA8_NOP_RM:
+  case PPC::BL8_NOTOC_RM:
+  case PPC::BL8_LDinto_toc:
+  case PPC::BL8_LDinto_toc_RM:
+  // Indirect calls via CTR (32 and 64-bit)
+  case PPC::BCTRL:
+  case PPC::BCTRL8:
+  case PPC::BCTRL8_RM:
+  case PPC::BCTRL8_LDinto_toc:
+  case PPC::BCTRL8_LDinto_toc_RM:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool PPCMCPlusBuilder::isCallWithNOPSlot(const MCInst &I) const {
+  // These call variants encode both the bl and the nop as a single MCInst
+  // (8 bytes total). Do not inject an additional NOP after them.
+  switch (I.getOpcode()) {
+  case PPC::BL8_NOP:
+  case PPC::BL8_NOP_TLS:
+  case PPC::BLA8_NOP:
+  case PPC::BL8_NOP_RM:
+  case PPC::BLA8_NOP_RM:
+  case PPC::BL8_LDinto_toc:
+  case PPC::BL8_LDinto_toc_RM:
     return true;
   default:
     return false;
@@ -188,8 +237,11 @@ bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
 
 bool PPCMCPlusBuilder::isIndirectCall(const MCInst &I) const {
   switch (I.getOpcode()) {
-  case PPC::BCTRL:  // branch to CTR with link (32-bit)
-  case PPC::BCTRL8: // branch to CTR with link (64-bit)
+  case PPC::BCTRL:
+  case PPC::BCTRL8:
+  case PPC::BCTRL8_RM:
+  case PPC::BCTRL8_LDinto_toc:
+  case PPC::BCTRL8_LDinto_toc_RM:
     return true;
   default:
     return false;

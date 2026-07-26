@@ -16,6 +16,7 @@
 #include "bolt/Core/BinaryFunction.h"
 #include "bolt/Core/DebugData.h"
 #include "bolt/Core/FunctionLayout.h"
+#include "bolt/Target/PowerPC/PPCMCPlusBuilder.h"
 #include "bolt/Utils/CommandLineOpts.h"
 #include "bolt/Utils/Utils.h"
 #include "llvm/DebugInfo/DWARF/DWARFCompileUnit.h"
@@ -535,12 +536,17 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
       if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
         bool NeedSlot = true;
 
+        // BL8_NOP and similar variants already encode the NOP as part of
+        // the instruction (8 bytes: bl + nop). Don't inject another one.
+        if (auto *PPCBuilder = dyn_cast<PPCMCPlusBuilder>(BC.MIB.get()))
+          if (PPCBuilder->isCallWithNOPSlot(Instr))
+            NeedSlot = false;
+
         // Don't inject if next instruction is already a NOP (not TOC-restore,
         // since we skip those above)
         auto NextI = std::next(I);
-        if (NextI != E && BC.MIB->isNoop(*NextI)) {
+        if (NeedSlot && NextI != E && BC.MIB->isNoop(*NextI))
           NeedSlot = false;
-        }
 
         if (NeedSlot) {
           LLVM_DEBUG(dbgs() << "BOLT-DEBUG: inserting post-call NOP in "
@@ -550,16 +556,12 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
           Streamer.emitInstruction(Nop, *BC.STI);
         }
 
-        // DIAGNOSTIC: log every call with full context including section offset
-        // to identify which function/call ends up at the failing block offset
-        // (e.g. block+0x8630 that triggers the JITLink NOP assertion)
+        // DIAGNOSTIC: log every call with section offset for debugging
         {
-          // Get current section offset via fragment offset sum
           uint64_t SecOffset = 0;
-          if (auto *Sec = Streamer.getCurrentSectionOnly()) {
+          if (auto *Sec = Streamer.getCurrentSectionOnly())
             for (auto &Frag : *Sec)
               SecOffset += Frag.getSize();
-          }
           dbgs() << "PPC64-CALL-TRACE:"
                  << " secoff=0x" << Twine::utohexstr(SecOffset)
                  << " func=" << BF.getPrintName()
