@@ -1417,9 +1417,9 @@ Error BinaryFunction::disassemble() {
         // This is a heuristic, not a proof: an entry is accepted while it is
         // non-zero, 4-byte aligned (instructions are word-aligned on PPC64)
         // and small enough to stay inside this function. The first word that
-        // fails marks the code resume point. Nothing cross-checks the range
+        // fails marks the end of the table. Nothing cross-checks the range
         // against relocations or the symbol table.
-        uint64_t CodeResume = DataStart;
+        uint64_t TableEnd = DataStart;
         for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
           const int32_t Entry = static_cast<int32_t>(
@@ -1429,6 +1429,20 @@ Error BinaryFunction::disassemble() {
           const uint64_t Magnitude =
               Entry < 0 ? -static_cast<int64_t>(Entry) : Entry;
           if (Magnitude >= FuncSize)
+            break;
+          TableEnd = ScanOff + 4;
+        }
+        // The table can be followed by zero-padding words before real code
+        // resumes. A zero word is not a legal PPC64 instruction, so it belongs
+        // to the data island too. Without this, markCodeAtOffset() below lands
+        // on the padding, BOLT decodes it, and the resulting "reference in the
+        // middle of instruction" warnings end in the same CFI assertion this
+        // whole block exists to avoid.
+        uint64_t CodeResume = TableEnd;
+        for (uint64_t ScanOff = TableEnd; ScanOff + 4 <= FuncSize;
+             ScanOff += 4) {
+          if (support::endian::read32(FunctionData.data() + ScanOff, Endian) !=
+              0)
             break;
           CodeResume = ScanOff + 4;
         }
