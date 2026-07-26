@@ -538,9 +538,10 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
 
         // BL8_NOP and similar variants already encode the NOP as part of
         // the instruction (8 bytes: bl + nop). Don't inject another one.
-        if (auto *PPCBuilder = dyn_cast<PPCMCPlusBuilder>(BC.MIB.get()))
-          if (PPCBuilder->isCallWithNOPSlot(Instr))
-            NeedSlot = false;
+        // We know we're in isPPC64() so this cast is safe.
+        if (static_cast<PPCMCPlusBuilder *>(BC.MIB.get())
+                ->isCallWithNOPSlot(Instr))
+          NeedSlot = false;
 
         // Don't inject if next instruction is already a NOP (not TOC-restore,
         // since we skip those above)
