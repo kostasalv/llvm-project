@@ -1420,8 +1420,8 @@ Error BinaryFunction::disassemble() {
         //   2. 4-byte aligned (instructions are word-aligned on PPC64)
         //   3. abs(entry) < function size (may be negative for backward jumps)
         // The first word that fails these checks ends the table.
-        // After the table there may be zero-padding words before real code
-        // resumes; include those in the data island too.
+        // Any trailing words (zeros or other non-entry data) before real code
+        // are also included in the island.
         uint64_t TableEnd = DataStart;
         for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
@@ -1432,16 +1432,22 @@ Error BinaryFunction::disassemble() {
             break;
           TableEnd = ScanOff + 4;
         }
-        // Skip any trailing zero-padding words between table and next code.
-        // Zero words (0x00000000) are illegal PPC64 instructions and must
-        // not be treated as code resume points.
+        // Extend the island past any trailing non-entry words by attempting
+        // to disassemble. Include words that fail to decode as valid PPC64
+        // instructions. Stop at the first successfully decodable instruction.
         uint64_t CodeResume = TableEnd;
         for (uint64_t ScanOff = TableEnd; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
-          uint32_t Word =
-              support::endian::read32le(FunctionData.data() + ScanOff);
-          if (Word != 0)
+          MCInst TestInstr;
+          uint64_t TestSize = 0;
+          const uint64_t TestAddr = getAddress() + ScanOff;
+          if (BC.SymbolicDisAsm->getInstruction(TestInstr, TestSize,
+                                                FunctionData.slice(ScanOff),
+                                                TestAddr, nulls())) {
+            // Successfully decoded - this is where code resumes
             break;
+          }
+          // Failed to decode - this word is data, extend the island
           CodeResume = ScanOff + 4;
         }
         LLVM_DEBUG(dbgs() << "BOLT-DEBUG: PPC64 PIC jump table in " << *this
@@ -1452,10 +1458,12 @@ Error BinaryFunction::disassemble() {
         markDataAtOffset(DataStart);
         if (CodeResume > DataStart && CodeResume < FuncSize) {
           markCodeAtOffset(CodeResume);
-          // Also register the code resume offset as an entry point so BOLT
-          // creates a basic block boundary there, enabling correct CFI
-          // attachment and control flow reconstruction.
-          addEntryPointAtOffset(CodeResume);
+          // Note: we intentionally do NOT call addEntryPointAtOffset here.
+          // The code resume point may not be at a valid instruction boundary
+          // when trailing garbage data follows the jump table. markCodeAtOffset
+          // is sufficient to bound the data island for the disassembler, and
+          // isOffsetInDataIsland() handles CFI directives that reference
+          // offsets inside the island range.
         }
       }
     }

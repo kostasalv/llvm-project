@@ -1770,7 +1770,7 @@ public:
       Offset = I->first;
     }
     // PPC64 ELFv2: skip CFI referencing offsets inside data islands.
-    if (BC.isPPC64() && I->first != Offset && getSizeOfDataInCodeAt(Offset) > 0)
+    if (BC.isPPC64() && I->first != Offset && isOffsetInDataIsland(Offset))
       return {};
     assert(I->first == Offset && "CFI pointing to unknown instruction");
     if (I == Instructions.begin())
@@ -1822,12 +1822,10 @@ public:
       --I;
       Offset = I->first;
     }
-    // PPC64 ELFv2: functions may have embedded PIC jump tables (constant
-    // islands) marked as data regions. CFI directives that reference offsets
-    // inside these islands have no corresponding instruction. Silently skip
-    // them rather than asserting - the data regions are correctly excluded
-    // from the instruction map and their CFI is irrelevant.
-    if (BC.isPPC64() && I->first != Offset && getSizeOfDataInCodeAt(Offset) > 0)
+    // PPC64 ELFv2: skip CFI directives referencing offsets inside data islands
+    // (embedded PIC jump tables). The offset may be in the middle of an island,
+    // not just at its start, so we use isOffsetInDataIsland().
+    if (BC.isPPC64() && I->first != Offset && isOffsetInDataIsland(Offset))
       return;
     assert(I->first == Offset && "CFI pointing to unknown instruction");
     // When dealing with RememberState, we place this CFI in FrameInstructions.
