@@ -667,6 +667,27 @@ private:
     Islands->CodeOffsets.emplace(Offset);
   }
 
+  /// Return true if \p Offset falls inside any data island (constant island)
+  /// in this function. Unlike getSizeOfDataInCodeAt() which only matches the
+  /// start of an island, this checks any offset within an island range.
+  /// Used on PPC64 to skip CFI directives referencing embedded jump table data.
+  bool isOffsetInDataIsland(uint64_t Offset) const {
+    if (!Islands)
+      return false;
+    // Find the last data island start <= Offset
+    auto It = Islands->DataOffsets.upper_bound(Offset);
+    if (It == Islands->DataOffsets.begin())
+      return false;
+    --It;
+    const uint64_t IslandStart = *It;
+    // Compute the island end: next code offset after IslandStart
+    auto CodeIt = Islands->CodeOffsets.upper_bound(IslandStart);
+    const uint64_t IslandEnd = (CodeIt != Islands->CodeOffsets.end())
+                                   ? *CodeIt
+                                   : getMaxSize();
+    return Offset >= IslandStart && Offset < IslandEnd;
+  }
+
   /// Register a relocation from data section referencing code at a non-zero
   /// offset in this function.
   void registerInternalRefDataRelocation(uint64_t FuncOffset,
