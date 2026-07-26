@@ -83,6 +83,14 @@ public:
   /// PPC64 ELFv2 reserves the instruction slot after a call for the linker.
   bool hasLinkerOwnedPostCallSlot() const override { return true; }
 
+  /// Return true if \p Instruction is a bctr that dispatches a PIC jump table:
+  ///   lwax  rDst, rBase, rIndex  (load signed 32-bit table entry)
+  ///   ...
+  ///   mtctr rDst
+  ///   bctr                       <- Instruction
+  bool isPICJumpTableBctr(const MCInst &Instruction, InstructionIterator Begin,
+                          InstructionIterator End) const override;
+
   // Build a PPC64 call-stub as MCInsts; the stub tail-calls Target via CTR.
   // Out will receive: [std r2,24(r1)] (optional), address materialization into
   // r12, mtctr r12, bctr. No @toc* fixups are used.
