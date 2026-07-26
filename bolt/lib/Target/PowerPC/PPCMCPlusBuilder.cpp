@@ -424,6 +424,9 @@ bool PPCMCPlusBuilder::isNoop(const MCInst &Inst) const {
   // PPC NOP can appear as two opcode forms:
   // 1. PPC::NOP  - the dedicated NOP pseudo-instruction (decoded from 0x60000000)
   // 2. PPC::ORI r0, r0, 0 - the underlying encoding (emitted by createNoop)
+  LLVM_DEBUG(dbgs() << "isNoop check: opcode=" << Inst.getOpcode()
+                    << " PPC::NOP=" << PPC::NOP
+                    << " PPC::ORI=" << PPC::ORI << "\n");
   if (Inst.getOpcode() == PPC::NOP)
     return true;
   return Inst.getOpcode() == PPC::ORI && Inst.getOperand(0).isReg() &&

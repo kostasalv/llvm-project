@@ -557,7 +557,7 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
           Streamer.emitInstruction(Nop, *BC.STI);
         }
 
-        // DIAGNOSTIC: log every call with section offset for debugging
+        // DIAGNOSTIC: log every call with section offset and opcode numbers
         {
           uint64_t SecOffset = 0;
           if (auto *Sec = Streamer.getCurrentSectionOnly())
@@ -567,10 +567,12 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
                  << " secoff=0x" << Twine::utohexstr(SecOffset)
                  << " func=" << BF.getPrintName()
                  << " opcode=" << BC.MII->getName(Instr.getOpcode())
+                 << "(" << Instr.getOpcode() << ")"
                  << " NeedSlot=" << NeedSlot
                  << " nextOp=";
           if (NextI != E)
             dbgs() << BC.MII->getName(NextI->getOpcode())
+                   << "(" << NextI->getOpcode() << ")"
                    << "(isNoop=" << BC.MIB->isNoop(*NextI) << ")"
                    << "(isTOCRestore="
                    << BC.MIB->isTOCRestoreAfterCall(*NextI) << ")";
