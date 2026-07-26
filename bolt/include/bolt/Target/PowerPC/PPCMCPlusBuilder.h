@@ -80,6 +80,9 @@ public:
 
   bool isTOCRestoreAfterCall(const MCInst &I) const override;
 
+  /// PPC64 ELFv2 reserves the instruction slot after a call for the linker.
+  bool hasLinkerOwnedPostCallSlot() const override { return true; }
+
   // Build a PPC64 call-stub as MCInsts; the stub tail-calls Target via CTR.
   // Out will receive: [std r2,24(r1)] (optional), address materialization into
   // r12, mtctr r12, bctr. No @toc* fixups are used.

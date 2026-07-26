@@ -1403,6 +1403,18 @@ public:
 
   virtual bool isTOCRestoreAfterCall(const MCInst &Inst) const { return false; }
 
+  /// Return true if the instruction slot immediately following a call belongs
+  /// to the linker on this target, so the emitter has to leave a NOP there for
+  /// the linker to fill in.
+  ///
+  /// True on PPC64 ELFv2, where the slot becomes a TOC restore
+  /// ("ld r2, 24(r1)") when the callee runs with a different TOC pointer, and
+  /// stays a NOP otherwise. The static linker has already made that choice in
+  /// the input binary, so what we read back is usually the finished TOC
+  /// restore; JITLink acts as the linker a second time on output and expects
+  /// to find a plain NOP.
+  virtual bool hasLinkerOwnedPostCallSlot() const { return false; }
+
   /// Return true if \p Inst is an instruction that potentially traps when
   /// working with addresses not aligned to the size of the operand.
   virtual bool requiresAlignedAddress(const MCInst &Inst) const {
