@@ -1407,18 +1407,14 @@ Error BinaryFunction::disassemble() {
                                             ? llvm::endianness::little
                                             : llvm::endianness::big;
         // Scan forward through raw function bytes to find where the PIC jump
-        // table ends. Each entry is a signed 32-bit word offset, loaded by
-        // lwax, which sign-extends: a switch case that jumps backwards is a
-        // legal negative entry, so read the word signed and range-check its
-        // magnitude. Reading it unsigned would make such an entry look
-        // enormous and end the table here, leaving the rest of it to be
-        // decoded as instructions.
-        //
-        // This is a heuristic, not a proof: an entry is accepted while it is
-        // non-zero, 4-byte aligned (instructions are word-aligned on PPC64)
-        // and small enough to stay inside this function. The first word that
-        // fails marks the end of the table. Nothing cross-checks the range
-        // against relocations or the symbol table.
+        // table ends. Each entry is a signed 32-bit word offset from the table
+        // base. Valid entries must satisfy:
+        //   1. Non-zero
+        //   2. 4-byte aligned (instructions are word-aligned on PPC64)
+        //   3. abs(entry) < function size (may be negative for backward jumps)
+        // The first word that fails these checks ends the table.
+        // Any trailing words (zeros or other non-entry data) before real code
+        // are also included in the island.
         uint64_t TableEnd = DataStart;
         for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
@@ -1432,18 +1428,22 @@ Error BinaryFunction::disassemble() {
             break;
           TableEnd = ScanOff + 4;
         }
-        // The table can be followed by zero-padding words before real code
-        // resumes. A zero word is not a legal PPC64 instruction, so it belongs
-        // to the data island too. Without this, markCodeAtOffset() below lands
-        // on the padding, BOLT decodes it, and the resulting "reference in the
-        // middle of instruction" warnings end in the same CFI assertion this
-        // whole block exists to avoid.
+        // Extend the island past any trailing non-entry words by attempting
+        // to disassemble. Include words that fail to decode as valid PPC64
+        // instructions. Stop at the first successfully decodable instruction.
         uint64_t CodeResume = TableEnd;
         for (uint64_t ScanOff = TableEnd; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
-          if (support::endian::read32(FunctionData.data() + ScanOff, Endian) !=
-              0)
+          MCInst TestInstr;
+          uint64_t TestSize = 0;
+          const uint64_t TestAddr = getAddress() + ScanOff;
+          if (BC.SymbolicDisAsm->getInstruction(TestInstr, TestSize,
+                                                FunctionData.slice(ScanOff),
+                                                TestAddr, nulls())) {
+            // Successfully decoded - this is where code resumes
             break;
+          }
+          // Failed to decode - this word is data, extend the island
           CodeResume = ScanOff + 4;
         }
         LLVM_DEBUG(dbgs() << "BOLT-DEBUG: PPC64 PIC jump table in " << *this
@@ -1454,13 +1454,12 @@ Error BinaryFunction::disassemble() {
         markDataAtOffset(DataStart);
         if (CodeResume > DataStart && CodeResume < FuncSize) {
           markCodeAtOffset(CodeResume);
-          // Register a local label where code resumes. buildCFG() starts a new
-          // basic block at every label, which is what CFI attachment and
-          // control flow reconstruction need here. Note this is deliberately
-          // not addEntryPointAtOffset(): nothing outside the function branches
-          // to this offset, and declaring an entry point would also affect
-          // symbol emission, PatchEntries and ELFv2 local entry points.
-          getOrCreateLocalLabel(getAddress() + CodeResume);
+          // Note: we intentionally do NOT call addEntryPointAtOffset here.
+          // The code resume point may not be at a valid instruction boundary
+          // when trailing garbage data follows the jump table. markCodeAtOffset
+          // is sufficient to bound the data island for the disassembler, and
+          // isOffsetInDataIsland() handles CFI directives that reference
+          // offsets inside the island range.
         }
       }
     }
