@@ -448,6 +448,18 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
 
   // Track the first emitted instruction with debug info.
   bool FirstInstr = true;
+
+  // Targets where the instruction after a call belongs to the linker (PPC64
+  // ELFv2). See MCPlusBuilder::hasLinkerOwnedPostCallSlot().
+  const bool HasLinkerOwnedPostCallSlot = BC.MIB->hasLinkerOwnedPostCallSlot();
+
+  // Set once a call has been emitted and its linker-owned slot filled, so a
+  // TOC restore that follows can be recognized as the slot contents the static
+  // linker wrote, and dropped. Deliberately tracked across basic blocks:
+  // exception handling can split a block between a call and its slot, leaving
+  // the call last in one block and the TOC restore first in the next.
+  bool InPostCallSlot = false;
+
   for (BinaryBasicBlock *const BB : FF) {
     if ((BC.AlignBlocks || BC.PreserveBlocksAlignment) &&
         BB->getAlignment() > 1)
@@ -512,43 +524,31 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
       LLVM_DEBUG(dbgs() << "EMIT " << BC.MII->getName(Instr.getOpcode())
                         << "\n");
 
+      // The slot after a call belongs to the linker, so drop the TOC restore
+      // the static linker put there and let JITLink fill the slot itself.
+      if (HasLinkerOwnedPostCallSlot && InPostCallSlot &&
+          BC.MIB->isTOCRestoreAfterCall(Instr)) {
+        LLVM_DEBUG(dbgs() << "BOLT-DEBUG: skipping TOC-restore after call in "
+                          << BF.getPrintName() << "\n");
+        InPostCallSlot = false;
+        continue;
+      }
+      InPostCallSlot = false;
+
       Streamer.emitInstruction(Instr, *BC.STI);
 
-      if (BC.isPPC64() && BC.MIB->isTOCRestoreAfterCall(Instr))
-        LLVM_DEBUG(dbgs() << "EMIT is TOC-restore\n");
+      // Leave the linker its slot after the call: emit a NOP, unless the next
+      // instruction in this block is already one and can serve as the slot.
+      if (HasLinkerOwnedPostCallSlot && BC.MIB->isCall(Instr)) {
+        InPostCallSlot = true;
 
-      // --- PPC64 ELFv2: guarantee a post-call NOP (call slot)
-      if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
-        bool NeedSlot = true;
-        LLVM_DEBUG(dbgs() << "PPC emit: call, considering slot after\n");
-
-        // If the next IR instruction exists and is already a NOP or TOC-restore
-        // , don't inject.
         auto NextI = std::next(I);
-        LLVM_DEBUG({
-          dbgs() << "PPC emit: CALL seen: next=";
-          if (NextI == E)
-            dbgs() << "<end>\n";
-          else
-            dbgs() << BC.MII->getName(NextI->getOpcode())
-                   << (BC.MIB->isTOCRestoreAfterCall(*NextI)
-                           ? " (TOC restore)\n"
-                           : "\n");
-        });
-        if (NextI != E &&
-            (BC.MIB->isNoop(*NextI) || BC.MIB->isTOCRestoreAfterCall(*NextI))) {
-          NeedSlot = false;
-        }
-
-        if (NeedSlot) {
-          LLVM_DEBUG(dbgs() << "PPC emit: inserting post-call NOP\n");
-          MCInst N;
-          BC.MIB->createNoop(N);
-          Streamer.emitInstruction(N, *BC.STI);
-          LLVM_DEBUG(dbgs() << "PPC: inserted NOP after call at "
+        if (NextI == E || !BC.MIB->isNoop(*NextI)) {
+          LLVM_DEBUG(dbgs() << "BOLT-DEBUG: inserting post-call NOP in "
                             << BF.getPrintName() << "\n");
-        } else {
-          LLVM_DEBUG(dbgs() << "PPC emit: post-call NOP not needed\n");
+          MCInst Nop;
+          BC.MIB->createNoop(Nop);
+          Streamer.emitInstruction(Nop, *BC.STI);
         }
       }
     }
