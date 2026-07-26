@@ -1419,14 +1419,28 @@ Error BinaryFunction::disassemble() {
         //   1. Non-zero
         //   2. 4-byte aligned (instructions are word-aligned on PPC64)
         //   3. abs(entry) < function size (may be negative for backward jumps)
-        // The first word that fails marks the code resume point.
-        uint64_t CodeResume = DataStart;
+        // The first word that fails these checks ends the table.
+        // After the table there may be zero-padding words before real code
+        // resumes; include those in the data island too.
+        uint64_t TableEnd = DataStart;
         for (uint64_t ScanOff = DataStart; ScanOff + 4 <= FuncSize;
              ScanOff += 4) {
           int32_t Word = static_cast<int32_t>(
               support::endian::read32le(FunctionData.data() + ScanOff));
           uint32_t AbsWord = static_cast<uint32_t>(Word < 0 ? -Word : Word);
           if (Word == 0 || (AbsWord & 3) != 0 || AbsWord >= FuncSize)
+            break;
+          TableEnd = ScanOff + 4;
+        }
+        // Skip any trailing zero-padding words between table and next code.
+        // Zero words (0x00000000) are illegal PPC64 instructions and must
+        // not be treated as code resume points.
+        uint64_t CodeResume = TableEnd;
+        for (uint64_t ScanOff = TableEnd; ScanOff + 4 <= FuncSize;
+             ScanOff += 4) {
+          uint32_t Word =
+              support::endian::read32le(FunctionData.data() + ScanOff);
+          if (Word != 0)
             break;
           CodeResume = ScanOff + 4;
         }
