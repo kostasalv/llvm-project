@@ -649,21 +649,15 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
         dbgs() << ", ";
       const auto &Op = I.getOperand(k);
       if (Op.isReg())
-        dbgs() << "reg:" << Op.getReg();
+        dbgs() << Op.getReg();
       else if (Op.isImm())
-        dbgs() << "imm:" << Op.getImm();
+        dbgs() << Op.getImm();
       else if (Op.isExpr())
         dbgs() << "expr";
-      else if (Op.isInst())
-        dbgs() << "inst";
-      else if (Op.isSFPImm())
-        dbgs() << "sfpimm";
-      else if (Op.isDFPImm())
-        dbgs() << "dfpimm";
       else
         dbgs() << "<op" << k << ">";
     }
-    dbgs() << ") numops=" << I.getNumOperands() << "\n";
+    dbgs() << ")\n";
   });
 
   if (I.getOpcode() != PPC::LD)
@@ -672,24 +666,37 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
   auto isR1 = [](unsigned R) { return R == PPC::X1 || R == PPC::R1; };
   auto isR2 = [](unsigned R) { return R == PPC::X2 || R == PPC::R2; };
 
-  // ld r2, 24(r1) -> operands: (dst, imm/expr, base)
-  // When compiled with --emit-relocs the immediate may be symbolized (isExpr),
-  // so accept either an immediate of 24 or any expression (which will encode
-  // the same TOC save slot offset via a relocation).
+  // ld r2, 24(r1) can appear in two forms depending on whether the binary
+  // was compiled with --emit-relocs:
+  //
+  // Without --emit-relocs (3 operands): dst=r2, offset=24(imm), base=r1
+  // With --emit-relocs (2 operands):    dst=r2, addr=expr(24(r1))
+  //   The symbolizer folds offset+base into a single memory expression.
+  //
+  // Both forms represent the same TOC-restore instruction.
+
   if (!I.getOperand(0).isReg() || !isR2(I.getOperand(0).getReg()))
     return false;
-  // Operand 1 is the offset: accept imm==24 or any symbolized expression.
-  const MCOperand &OffOp = I.getOperand(1);
-  if (OffOp.isImm()) {
-    if (OffOp.getImm() != 24)
-      return false;
-  } else if (!OffOp.isExpr()) {
-    return false; // unexpected operand kind
-  }
-  if (!I.getOperand(2).isReg() || !isR1(I.getOperand(2).getReg()))
-    return false;
 
-  return true;
+  if (I.getNumOperands() == 2) {
+    // With --emit-relocs: operand 1 is a symbolized memory expression.
+    // Any ld r2, expr form after a call is a TOC-restore.
+    return I.getOperand(1).isExpr();
+  }
+
+  // Without --emit-relocs: 3-operand form (dst, offset_imm, base_reg)
+  if (I.getNumOperands() == 3) {
+    const MCOperand &OffOp = I.getOperand(1);
+    if (OffOp.isImm()) {
+      if (OffOp.getImm() != 24)
+        return false;
+    } else if (!OffOp.isExpr()) {
+      return false;
+    }
+    return I.getOperand(2).isReg() && isR1(I.getOperand(2).getReg());
+  }
+
+  return false;
 }
 
 static inline MCOperand R(unsigned Reg) { return MCOperand::createReg(Reg); }
