@@ -749,23 +749,30 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
   // ld r2, 24(r1) can appear in two forms depending on whether the binary
   // was compiled with --emit-relocs:
   //
-  // Without --emit-relocs (3 operands): dst=r2, offset=24(imm), base=r1
-  // With --emit-relocs (2 operands):    dst=r2, addr=expr(24(r1))
+  // Without --emit-relocs (3 prime operands): dst=r2, offset=24(imm), base=r1
+  // With --emit-relocs (2 prime operands):    dst=r2, addr=expr(24(r1))
   //   The symbolizer folds offset+base into a single memory expression.
+  //
+  // BOLT may attach annotation operands (Offset, NOP marker, etc.) beyond the
+  // prime operands. Use MCPlus::getNumPrimeOperands() instead of
+  // getNumOperands() so that annotation-decorated instructions are still
+  // recognised correctly.
   //
   // Both forms represent the same TOC-restore instruction.
 
   if (!I.getOperand(0).isReg() || !isR2(I.getOperand(0).getReg()))
     return false;
 
-  if (I.getNumOperands() == 2) {
+  const unsigned NumPrime = MCPlus::getNumPrimeOperands(I);
+
+  if (NumPrime == 2) {
     // With --emit-relocs: operand 1 is a symbolized memory expression.
     // Any ld r2, expr form after a call is a TOC-restore.
     return I.getOperand(1).isExpr();
   }
 
   // Without --emit-relocs: 3-operand form (dst, offset_imm, base_reg)
-  if (I.getNumOperands() == 3) {
+  if (NumPrime == 3) {
     const MCOperand &OffOp = I.getOperand(1);
     if (OffOp.isImm()) {
       if (OffOp.getImm() != 24)
