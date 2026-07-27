@@ -150,6 +150,8 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
     // CallBranchDelta.  This prevents applyFixup from overwriting live code
     // in tail calls and non-simple functions emitted as raw bytes by BOLT.
     if (G.getTargetTriple().isPPC64()) {
+      llvm::errs() << "BOLT-DIAG: isPPC64=true PPC64TOCBase=0x"
+                   << Twine::utohexstr(Linker.BC.PPC64TOCBase) << "\n";
       bool IsLE = G.getTargetTriple().getArch() == Triple::ppc64le;
       if (IsLE)
         Config.PostPrunePasses.push_back(
