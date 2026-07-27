@@ -61,8 +61,16 @@ void PPCMCPlusBuilder::createPushRegisters(MCInst &Inst1, MCInst &Inst2,
 }
 
 bool PPCMCPlusBuilder::shouldRecordCodeRelocation(unsigned Type) const {
+  // On PPC64 ELFv2, R_PPC64_REL24 is used for direct calls (bl instructions).
+  // For functions that BOLT processes (simple functions), call targets are
+  // symbolized during disassembly via evaluateBranch/replaceBranchTarget, so
+  // storing the raw relocation is not needed.
+  // For non-simple functions emitted as raw bytes (e.g. PLT branch stubs),
+  // emitting R_PPC64_REL24 causes JITLink to create CallBranchDeltaRestoreTOC
+  // edges that expect a NOP at call+4. But PLT stubs have real code there
+  // (ld r2,24(r1) or the next instruction), causing an assertion failure.
+  // Therefore, do NOT record R_PPC64_REL24 as a code relocation on PPC64.
   switch (Type) {
-  case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL14:
     return true;
   default:
