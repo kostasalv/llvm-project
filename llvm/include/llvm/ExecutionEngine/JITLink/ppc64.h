@@ -453,7 +453,6 @@ inline Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
                << " found=0x" << formatv("{0:x}", NopInst)
                << " expected=0x60000000 (nop)"
                << " S=0x" << formatv("{0:x}", S)
-               << " target=" << E.getTarget().getName()
                << " section=" << B.getSection().getName()
                << " block=0x" << formatv("{0:x}", B.getAddress().getValue())
                << " fixup_offset=0x" << formatv("{0:x}", E.getOffset())
