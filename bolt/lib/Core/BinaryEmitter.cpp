@@ -1292,8 +1292,17 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
 
     StringRef Prefix = Section.hasSectionRef() ? OrgSecPrefix : "";
     std::string OutName = (Prefix + Section.getName()).str();
-    // PPC64: drop relocations before emitting .bolt.org.* sections
-    if (BC.isPPC64() && StringRef(OutName).starts_with(OrgSecPrefix))
+    // PPC64: drop relocations before emitting sections that contain raw
+    // original binary content. These sections are emitted verbatim and their
+    // R_PPC64_REL24 call relocations cannot be handled correctly by JITLink
+    // (the post-call slot contains real code, not a NOP placeholder).
+    // This covers both:
+    //   1. .bolt.org.* sections (already have OrgSecPrefix)
+    //   2. Synthetic .text sections created by BOLT (hasSectionRef()==false)
+    //      that hold original PLT stubs and other raw copied content.
+    if (BC.isPPC64() && (StringRef(OutName).starts_with(OrgSecPrefix) ||
+                         (!Section.hasSectionRef() &&
+                          Section.isText())))
       Section.clearRelocations();
     Section.emitAsData(Streamer, OutName);
     Section.clearRelocations();
