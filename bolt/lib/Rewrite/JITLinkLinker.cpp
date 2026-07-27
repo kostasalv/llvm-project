@@ -10,6 +10,7 @@
 #include "bolt/Core/BinaryContext.h"
 #include "bolt/Core/BinaryData.h"
 #include "bolt/Core/BinarySection.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ExecutionEngine/JITLink/ELF_riscv.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/JITLink/ppc64.h"
@@ -156,6 +157,38 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       else
         Config.PostPrunePasses.push_back(
             ppc64DowngradeRestoreTOCIfNoNOP<llvm::endianness::big>);
+
+      // PPC64 ELFv2: JITLink's ELFJITLinker_ppc64 sets .TOC. to
+      // $__GOT + 0x8000 (added as a PostAllocationPass in its constructor).
+      // BOLT-rewritten functions hardcode r2 = original_binary_TOC_base, so
+      // the JITLink-synthesised stubs must also use that same TOC base.
+      // Override .TOC. in a PreFixupPass (which runs after all
+      // PostAllocationPasses including defineTOCBase) to force it back to the
+      // original binary's TOC base.  TOCDelta fixups in the synthesized stubs
+      // are then computed relative to the correct r2 value.
+      if (Linker.BC.PPC64TOCBase != 0) {
+        uint64_t OrigTOC = Linker.BC.PPC64TOCBase;
+        Config.PreFixupPasses.push_back([OrigTOC](jitlink::LinkGraph &G) {
+          constexpr StringRef TOCName = ".TOC.";
+          constexpr StringRef TOCAliasName = "__TOC__";
+          // After defineTOCBase runs (a PostAllocationPass), .TOC. and
+          // __TOC__ are absolute symbols.  Just walk absolute_symbols().
+          for (auto *Sym : G.absolute_symbols()) {
+            if (Sym->hasName() &&
+                (*Sym->getName() == TOCName ||
+                 *Sym->getName() == TOCAliasName)) {
+              LLVM_DEBUG(dbgs()
+                         << "BOLT PPC64: overriding TOC symbol "
+                         << *Sym->getName() << " from 0x"
+                         << Twine::utohexstr(Sym->getAddress().getValue())
+                         << " to original TOC 0x"
+                         << Twine::utohexstr(OrigTOC) << "\n");
+              Sym->getAddressable().setAddress(orc::ExecutorAddr(OrigTOC));
+            }
+          }
+          return Error::success();
+        });
+      }
     }
 
     if (G.getTargetTriple().isRISCV()) {
