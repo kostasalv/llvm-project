@@ -818,6 +818,7 @@ Error RewriteInstance::run() {
     if (auto GOrErr = BC->getUniqueSectionByName(".got")) {
       const BinarySection &G = *GOrErr;
       PPC64TOCBase = G.getAddress() + 0x8000; // ELFv2 ABI
+      BC->PPC64TOCBase = PPC64TOCBase;
       HavePPC64TOCBase = true;
       if (opts::Verbosity >= 1)
         BC->outs() << "BOLT-INFO: PPC64 TOC base: 0x"

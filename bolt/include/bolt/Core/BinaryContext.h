@@ -746,6 +746,12 @@ public:
   /// linked.
   bool IsStaticExecutable{false};
 
+  /// PPC64 ELFv2: TOC base address (.got + 0x8000) of the input binary.
+  /// Used by JITLink to anchor synthesized stubs to the same TOC as the
+  /// original binary so that re-emitted functions (which hardcode r2 to this
+  /// value) can reach the stubs via the same r2.
+  uint64_t PPC64TOCBase{0};
+
   /// Set to true if the binary contains PT_INTERP header.
   bool HasInterpHeader{false};
 
