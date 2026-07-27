@@ -1296,13 +1296,10 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
     // original binary content. These sections are emitted verbatim and their
     // R_PPC64_REL24 call relocations cannot be handled correctly by JITLink
     // (the post-call slot contains real code, not a NOP placeholder).
-    // This covers both:
-    //   1. .bolt.org.* sections (already have OrgSecPrefix)
-    //   2. Synthetic .text sections created by BOLT (hasSectionRef()==false)
-    //      that hold original PLT stubs and other raw copied content.
-    if (BC.isPPC64() && (StringRef(OutName).starts_with(OrgSecPrefix) ||
-                         (!Section.hasSectionRef() &&
-                          Section.isText())))
+    // Drop all relocations from all data sections on PPC64 - they refer to
+    // original binary addresses that JITLink cannot resolve correctly after
+    // code has been relocated to new addresses.
+    if (BC.isPPC64())
       Section.clearRelocations();
     Section.emitAsData(Streamer, OutName);
     Section.clearRelocations();
