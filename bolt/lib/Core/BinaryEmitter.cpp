@@ -513,40 +513,34 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
       LLVM_DEBUG(dbgs() << "EMIT " << BC.MII->getName(Instr.getOpcode())
                         << "\n");
 
-      // PPC64 ELFv2: Skip TOC-restore instructions that immediately follow
-      // calls. The linker will rewrite the post-call NOP to TOC-restore if
-      // needed.
-      if (BC.isPPC64() && BC.MIB->isTOCRestoreAfterCall(Instr)) {
-        // Check if previous instruction exists and is a call
-        if (I != BB->begin()) {
-          auto PrevI = std::prev(I);
-          if (BC.MIB->isCall(*PrevI)) {
-            LLVM_DEBUG(dbgs()
-                       << "BOLT-DEBUG: skipping TOC-restore after call in "
-                       << BF.getPrintName() << "\n");
-            continue;
-          }
-        }
-      }
-
       Streamer.emitInstruction(Instr, *BC.STI);
 
-      // PPC64 ELFv2: Ensure a NOP (call slot) after every call instruction.
-      // JITLink will rewrite this NOP to TOC-restore for external calls.
+      // PPC64 ELFv2: after a call, ensure the post-call slot contains either
+      // the original TOC-restore (ld r2,24(r1)) or a NOP placeholder.
+      //
+      // - If the next instruction is already a TOC-restore or a NOP, do not
+      //   inject anything — the slot is already correct.
+      // - BL8_NOP variants already encode an 8-byte bl+nop, skip those too.
+      // - Otherwise inject a NOP so JITLink can rewrite it to a TOC-restore
+      //   for external calls via CallBranchDeltaRestoreTOC.
+      //
+      // Note: we intentionally do NOT skip existing TOC-restore instructions.
+      // The JITLink pass ppc64DowngradeRestoreTOCIfNoNOP demotes
+      // CallBranchDeltaRestoreTOC edges to CallBranchDelta when call+4 is not
+      // a NOP, leaving the original TOC-restore untouched.
       if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
+        auto NextI = std::next(I);
         bool NeedSlot = true;
 
-        // BL8_NOP and similar variants already encode the NOP as part of
-        // the instruction (8 bytes: bl + nop). Don't inject another one.
-        // We know we're in isPPC64() so this cast is safe.
+        // BL8_NOP and similar already encode bl+nop (8 bytes total).
         if (static_cast<PPCMCPlusBuilder *>(BC.MIB.get())
                 ->isCallWithNOPSlot(Instr))
           NeedSlot = false;
 
-        // Don't inject if next instruction is already a NOP (not TOC-restore,
-        // since we skip those above)
-        auto NextI = std::next(I);
-        if (NeedSlot && NextI != E && BC.MIB->isNoop(*NextI))
+        // Next instruction is already a NOP or TOC-restore — slot is present.
+        if (NeedSlot && NextI != E &&
+            (BC.MIB->isNoop(*NextI) ||
+             BC.MIB->isTOCRestoreAfterCall(*NextI)))
           NeedSlot = false;
 
         if (NeedSlot) {
@@ -555,30 +549,6 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
           MCInst Nop;
           BC.MIB->createNoop(Nop);
           Streamer.emitInstruction(Nop, *BC.STI);
-        }
-
-        // DIAGNOSTIC: log every call with section offset and opcode numbers
-        {
-          uint64_t SecOffset = 0;
-          if (auto *Sec = Streamer.getCurrentSectionOnly())
-            for (auto &Frag : *Sec)
-              SecOffset += Frag.getSize();
-          dbgs() << "PPC64-CALL-TRACE:"
-                 << " secoff=0x" << Twine::utohexstr(SecOffset)
-                 << " func=" << BF.getPrintName()
-                 << " opcode=" << BC.MII->getName(Instr.getOpcode())
-                 << "(" << Instr.getOpcode() << ")"
-                 << " NeedSlot=" << NeedSlot
-                 << " nextOp=";
-          if (NextI != E)
-            dbgs() << BC.MII->getName(NextI->getOpcode())
-                   << "(" << NextI->getOpcode() << ")"
-                   << "(isNoop=" << BC.MIB->isNoop(*NextI) << ")"
-                   << "(isTOCRestore="
-                   << BC.MIB->isTOCRestoreAfterCall(*NextI) << ")";
-          else
-            dbgs() << "<end>";
-          dbgs() << "\n";
         }
       }
     }
