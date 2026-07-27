@@ -306,6 +306,18 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function,
   Section->setHasInstructions(true);
   BC.Ctx->addGenDwarfSection(Section);
 
+  // DEBUG: print when any function emits to ".text" (not ".local.text.*")
+  if (BC.isPPC64()) {
+    StringRef SecName = Section->getName();
+    if (SecName == ".text" || SecName.starts_with(".text.cold")) {
+      dbgs() << "PPC64-TEXT-EMIT: function=" << Function.getPrintName()
+             << " section=" << SecName
+             << " isSimple=" << Function.isSimple()
+             << " isInjected=" << Function.isInjected()
+             << "\n";
+    }
+  }
+
   if (BC.HasRelocations) {
     // Set section alignment to at least maximum possible object alignment.
     // We need this to support LongJmp and other passes that calculates
@@ -1292,6 +1304,14 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
 
     StringRef Prefix = Section.hasSectionRef() ? OrgSecPrefix : "";
     std::string OutName = (Prefix + Section.getName()).str();
+    // DEBUG: trace what emitDataSections processes for PPC64
+    if (BC.isPPC64())
+      dbgs() << "PPC64-DATA-EMIT: section=" << Section.getName()
+             << " outName=" << OutName
+             << " hasRelocations=" << Section.hasRelocations()
+             << " hasSectionRef=" << Section.hasSectionRef()
+             << " isText=" << Section.isText()
+             << "\n";
     // PPC64: drop relocations before emitting sections that contain raw
     // original binary content. These sections are emitted verbatim and their
     // R_PPC64_REL24 call relocations cannot be handled correctly by JITLink
