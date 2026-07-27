@@ -12,9 +12,11 @@
 #include "bolt/Core/BinarySection.h"
 #include "llvm/ExecutionEngine/JITLink/ELF_riscv.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
+#include "llvm/ExecutionEngine/JITLink/ppc64.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 
 #define DEBUG_TYPE "bolt"
 
@@ -71,6 +73,45 @@ void reassignSectionAddress(jitlink::LinkGraph &LG,
   }
 }
 
+/// PPC64 ELFv2: downgrade CallBranchDeltaRestoreTOC edges to CallBranchDelta
+/// when the post-call slot does not contain a NOP (0x60000000).
+///
+/// JITLink's PLTTableManager unconditionally transforms every external
+/// RequestCall edge to CallBranchDeltaRestoreTOC, which instructs applyFixup
+/// to overwrite the 4 bytes after the `bl` with `ld r2, 24(r1)` (TOC
+/// restore).  This is only valid when BOLT (or the original linker) left a
+/// NOP placeholder in that slot.  For tail calls, local calls or non-simple
+/// functions emitted as raw bytes there is no such placeholder, so the
+/// rewrite would corrupt live code.  Demoting the edge to CallBranchDelta
+/// patches only the branch offset and leaves the post-call slot intact.
+template <llvm::endianness Endianness>
+Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
+  constexpr uint32_t NOP = 0x60000000u;
+  for (auto *Block : G.blocks()) {
+    for (auto &Edge : Block->edges()) {
+      if (Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
+        continue;
+      // The block's content is mutable at this point (pre-fixup).
+      auto Content = Block->getContent();
+      size_t Off = Edge.getOffset();
+      // Guard: need at least 8 bytes (bl + slot).
+      if (Off + 8 > Content.size())
+        continue;
+      uint32_t Slot =
+          support::endian::read32<Endianness>(Content.data() + Off + 4);
+      if (Slot != NOP) {
+        LLVM_DEBUG(dbgs() << "BOLT PPC64: demoting CallBranchDeltaRestoreTOC"
+                          << " to CallBranchDelta at offset 0x"
+                          << Twine::utohexstr(Off) << " in block 0x"
+                          << Twine::utohexstr(Block->getAddress().getValue())
+                          << " (slot=0x" << Twine::utohexstr(Slot) << ")\n");
+        Edge.setKind(jitlink::ppc64::CallBranchDelta);
+      }
+    }
+  }
+  return Error::success();
+}
+
 } // anonymous namespace
 
 struct JITLinkLinker::Context : jitlink::JITLinkContext {
@@ -102,6 +143,20 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       });
       return Error::success();
     });
+
+    // PPC64 ELFv2: before fixups are applied, demote any
+    // CallBranchDeltaRestoreTOC edge whose post-call slot is not a NOP to
+    // CallBranchDelta.  This prevents applyFixup from overwriting live code
+    // in tail calls and non-simple functions emitted as raw bytes by BOLT.
+    if (G.getTargetTriple().isPPC64()) {
+      bool IsLE = G.getTargetTriple().getArch() == Triple::ppc64le;
+      if (IsLE)
+        Config.PostPrunePasses.push_back(
+            ppc64DowngradeRestoreTOCIfNoNOP<llvm::endianness::little>);
+      else
+        Config.PostPrunePasses.push_back(
+            ppc64DowngradeRestoreTOCIfNoNOP<llvm::endianness::big>);
+    }
 
     if (G.getTargetTriple().isRISCV()) {
       Config.PostAllocationPasses.push_back(
