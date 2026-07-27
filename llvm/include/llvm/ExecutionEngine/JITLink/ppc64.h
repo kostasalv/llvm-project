@@ -454,12 +454,18 @@ inline Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
                << " expected=0x60000000 (nop)"
                << " S=0x" << formatv("{0:x}", S)
                << " target=" << E.getTarget().getName()
+               << " section=" << B.getSection().getName()
+               << " block=0x" << formatv("{0:x}", B.getAddress().getValue())
+               << " fixup_offset=0x" << formatv("{0:x}", E.getOffset())
                << "\n";
-        // Print 5 instructions around the slot for context
-        for (int off = -8; off <= 12; off += 4) {
+        // Print 10 instructions around the slot for context
+        for (int off = -16; off <= 20; off += 4) {
           uint32_t W = support::endian::read32<Endianness>(FixupPtr + off);
           dbgs() << "  [P" << (off >= 0 ? "+" : "") << off << "] = 0x"
-                 << formatv("{0:x}", W) << "\n";
+                 << formatv("{0:x}", W);
+          if (off == 0) dbgs() << "  <- BL";
+          if (off == 4) dbgs() << "  <- should be NOP";
+          dbgs() << "\n";
         }
       }
       assert(NopInst == 0x60000000 &&
