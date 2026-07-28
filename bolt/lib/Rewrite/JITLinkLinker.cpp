@@ -118,6 +118,8 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
 struct JITLinkLinker::Context : jitlink::JITLinkContext {
   JITLinkLinker &Linker;
   JITLinkLinker::SectionsMapper MapSections;
+  // Set in modifyPassConfig; used in lookup() for PPC64-specific diagnostics.
+  bool IsPPC64 = false;
 
   Context(JITLinkLinker &Linker, JITLinkLinker::SectionsMapper MapSections)
       : JITLinkContext(&Linker.Dylib), Linker(Linker),
@@ -137,6 +139,9 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
 
   Error modifyPassConfig(jitlink::LinkGraph &G,
                          jitlink::PassConfiguration &Config) override {
+    // Record the target so lookup() can emit PPC64-specific diagnostics.
+    IsPPC64 = G.getTargetTriple().isPPC64();
+
     Config.PrePrunePasses.push_back(markSectionsLive);
     Config.PostAllocationPasses.push_back([this](auto &G) {
       MapSections([&G](const BinarySection &Section, uint64_t Address) {
@@ -220,6 +225,12 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       if (auto SymInfo = Linker.lookupSymbolInfo(SymName)) {
         LLVM_DEBUG(dbgs() << "Resolved to address 0x"
                           << Twine::utohexstr(SymInfo->Address) << "\n");
+        // PPC64 debug: unconditionally log every symbol resolution so we can
+        // identify what gets resolved to __glink_PLTresolve or other
+        // unexpected addresses without needing -debug-only=bolt.
+        if (IsPPC64)
+          errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> symtab 0x"
+                 << Twine::utohexstr(SymInfo->Address) << "\n";
         AllResults[Symbol.first] = orc::ExecutorSymbolDef(
             orc::ExecutorAddr(SymInfo->Address), JITSymbolFlags());
         continue;
@@ -231,6 +242,9 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
                                : I->getAddress();
         LLVM_DEBUG(dbgs() << "Resolved to address 0x"
                           << Twine::utohexstr(Address) << "\n");
+        if (IsPPC64)
+          errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> BinaryData 0x"
+                 << Twine::utohexstr(Address) << "\n";
         AllResults[Symbol.first] = orc::ExecutorSymbolDef(
             orc::ExecutorAddr(Address), JITSymbolFlags());
         continue;
@@ -242,6 +256,9 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
               I->isMoved() ? I->getOutputAddress() : I->getAddress();
           LLVM_DEBUG(dbgs() << "Resolved to address 0x"
                             << Twine::utohexstr(Address) << "\n");
+          if (IsPPC64)
+            errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> GOTSymbol 0x"
+                   << Twine::utohexstr(Address) << "\n";
           AllResults[Symbol.first] = orc::ExecutorSymbolDef(
               orc::ExecutorAddr(Address), JITSymbolFlags());
           continue;
@@ -249,6 +266,8 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       }
 
       LLVM_DEBUG(dbgs() << "Resolved to address 0x0\n");
+      if (IsPPC64)
+        errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> UNRESOLVED (0x0)\n";
       AllResults[Symbol.first] =
           orc::ExecutorSymbolDef(orc::ExecutorAddr(0), JITSymbolFlags());
     }
