@@ -145,52 +145,54 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       return Error::success();
     });
 
-    // PPC64 ELFv2: before fixups are applied, demote any
-    // CallBranchDeltaRestoreTOC edge whose post-call slot is not a NOP to
-    // CallBranchDelta.  This prevents applyFixup from overwriting live code
-    // in tail calls and non-simple functions emitted as raw bytes by BOLT.
+    // PPC64 ELFv2: BOLT-rewritten functions hardcode r2 to the original
+    // binary's TOC base.  JITLink's default PLT stubs (LongBranchSaveR2) use
+    // TOC-relative (r2-relative) addressing to load the callee address from
+    // $__GOT, but $__GOT is allocated far from the original r2, so the
+    // TOCDelta fixups would land outside $__GOT and read garbage / zero.
+    //
+    // Fix: use LongBranchNoTOC stubs instead.  These stubs are fully
+    // PC-relative (they use bcl+mflr to get their own address, then
+    // addis/ld relative to that), so they work correctly regardless of r2.
+    // We achieve this by converting every RequestCall edge on an external
+    // target to RequestCallNoTOC before buildTables_ELF_ppc64 runs.
+    //
+    // We also demote CallBranchDeltaRestoreTOC → CallBranchDelta when the
+    // post-call slot is not a NOP, to prevent applyFixup from overwriting
+    // live code in tail calls and non-simple functions emitted as raw bytes.
     if (G.getTargetTriple().isPPC64()) {
-      llvm::errs() << "BOLT-DIAG: isPPC64=true PPC64TOCBase=0x"
-                   << Twine::utohexstr(Linker.BC.PPC64TOCBase) << "\n";
       bool IsLE = G.getTargetTriple().getArch() == Triple::ppc64le;
+
+      // Pass 1 (PrePrune, runs before buildTables_ELF_ppc64 which is a
+      // PostPrunePass): Convert RequestCall on external targets →
+      // RequestCallNoTOC so that JITLink generates PC-relative
+      // LongBranchNoTOC stubs instead of TOC-relative LongBranchSaveR2
+      // stubs.  Must run before buildTables_ELF_ppc64 processes edges.
+      Config.PrePrunePasses.push_back([](jitlink::LinkGraph &G) -> Error {
+        for (auto *Block : G.blocks()) {
+          for (auto &Edge : Block->edges()) {
+            if (Edge.getKind() == jitlink::ppc64::RequestCall &&
+                Edge.getTarget().isExternal()) {
+              LLVM_DEBUG(dbgs()
+                         << "BOLT PPC64: converting RequestCall → "
+                            "RequestCallNoTOC for external target "
+                         << Edge.getTarget().getName() << "\n");
+              Edge.setKind(jitlink::ppc64::RequestCallNoTOC);
+            }
+          }
+        }
+        return Error::success();
+      });
+
+      // Pass 2 (PostPrune, runs before buildTables_ELF_ppc64):
+      // Demote CallBranchDeltaRestoreTOC → CallBranchDelta when the
+      // post-call slot is not a NOP.
       if (IsLE)
         Config.PostPrunePasses.push_back(
             ppc64DowngradeRestoreTOCIfNoNOP<llvm::endianness::little>);
       else
         Config.PostPrunePasses.push_back(
             ppc64DowngradeRestoreTOCIfNoNOP<llvm::endianness::big>);
-
-      // PPC64 ELFv2: JITLink's ELFJITLinker_ppc64 sets .TOC. to
-      // $__GOT + 0x8000 (added as a PostAllocationPass in its constructor).
-      // BOLT-rewritten functions hardcode r2 = original_binary_TOC_base, so
-      // the JITLink-synthesised stubs must also use that same TOC base.
-      // Override .TOC. in a PreFixupPass (which runs after all
-      // PostAllocationPasses including defineTOCBase) to force it back to the
-      // original binary's TOC base.  TOCDelta fixups in the synthesized stubs
-      // are then computed relative to the correct r2 value.
-      if (Linker.BC.PPC64TOCBase != 0) {
-        uint64_t OrigTOC = Linker.BC.PPC64TOCBase;
-        Config.PreFixupPasses.push_back([OrigTOC](jitlink::LinkGraph &G) {
-          constexpr StringRef TOCName = ".TOC.";
-          constexpr StringRef TOCAliasName = "__TOC__";
-          // After defineTOCBase runs (a PostAllocationPass), .TOC. and
-          // __TOC__ are absolute symbols.  Just walk absolute_symbols().
-          for (auto *Sym : G.absolute_symbols()) {
-            if (Sym->hasName() &&
-                (*Sym->getName() == TOCName ||
-                 *Sym->getName() == TOCAliasName)) {
-              LLVM_DEBUG(dbgs()
-                         << "BOLT PPC64: overriding TOC symbol "
-                         << *Sym->getName() << " from 0x"
-                         << Twine::utohexstr(Sym->getAddress().getValue())
-                         << " to original TOC 0x"
-                         << Twine::utohexstr(OrigTOC) << "\n");
-              Sym->getAddressable().setAddress(orc::ExecutorAddr(OrigTOC));
-            }
-          }
-          return Error::success();
-        });
-      }
     }
 
     if (G.getTargetTriple().isRISCV()) {
