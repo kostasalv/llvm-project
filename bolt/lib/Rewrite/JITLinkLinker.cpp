@@ -169,49 +169,64 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       bool IsLE = G.getTargetTriple().getArch() == Triple::ppc64le;
 
       // Pass 1 (PrePrune, runs before buildTables_ELF_ppc64 which is a
-      // PostPrunePass): Classify RequestCall edges on external targets:
+      // PostPrunePass): Convert all external RequestCall edges to
+      // RequestCallNoTOC so buildTables_ELF_ppc64 generates PC-relative
+      // LongBranchNoTOC stubs instead of TOC-relative LongBranchSaveR2 stubs.
       //
-      //  a) Targets named "*.plt_call.*" or "*.plt_branch.*" are BOLT's
-      //     internal stubs from the original binary.  They use TOC-relative
-      //     addressing (ld r12,N(r2)) and will be resolved to their original
-      //     address in lookup().  Convert to CallBranchDelta so JITLink
-      //     patches the bl directly without building a wrapper stub.
+      // $__GOT is allocated far from the original TOC base (r2), so
+      // LongBranchSaveR2 stubs would compute wrong TOCDelta offsets and crash.
+      // LongBranchNoTOC stubs are fully PC-relative and always correct.
       //
-      //  b) All other external targets: convert to RequestCallNoTOC so
-      //     JITLink generates PC-relative LongBranchNoTOC stubs instead
-      //     of the TOC-relative LongBranchSaveR2 stubs it would otherwise
-      //     build ($__GOT is not near r2, making TOCDelta fixups wrong).
+      // For BOLT's plt_call/plt_branch stubs (original binary's PLT stubs),
+      // lookup() resolves their names to the correct stub addresses, and the
+      // LongBranchNoTOC wrapper bctr's into them with r2 = original TOC base,
+      // so they execute correctly.
       Config.PrePrunePasses.push_back([](jitlink::LinkGraph &G) -> Error {
         for (auto *Block : G.blocks()) {
           for (auto &Edge : Block->edges()) {
-            if (Edge.getKind() != jitlink::ppc64::RequestCall ||
-                !Edge.getTarget().isExternal())
+            if (Edge.getKind() != jitlink::ppc64::RequestCall)
               continue;
-            // BOLT's plt_call/plt_branch stubs are local to the original
-            // binary and use TOC-relative addressing (ld r12,N(r2)).  They
-            // must be called with a plain branch — not via a LongBranchNoTOC
-            // stub — because LongBranchNoTOC loads the stub address as a
-            // function pointer and bctr's into it, which re-enters glink.
-            // These stubs contain ".plt_call." or ".plt_branch." in their
-            // name (BOLT's internal naming scheme).
-            StringRef TgtName = *Edge.getTarget().getName();
-            if (TgtName.contains(".plt_call.") ||
-                TgtName.contains(".plt_branch.")) {
-              // BOLT's plt_call/plt_branch stubs are TOC-relative code in
-              // the original binary.  We will resolve them to the stub's own
-              // address in lookup(), so just need a direct patched branch —
-              // no wrapper stub.  Use CallBranchDelta (plain PC-relative bl).
-              LLVM_DEBUG(dbgs()
-                         << "BOLT PPC64: converting RequestCall → "
-                            "CallBranchDelta for plt stub target "
-                         << TgtName << "\n");
-              Edge.setKind(jitlink::ppc64::CallBranchDelta);
+
+            // Classify the edge target to decide which stub kind to use.
+            //
+            // NOTE: ELF_ppc64.cpp defers externality determination to
+            // PostPrunePass ("Determining a target is external or not is
+            // deferred in PostPrunePass").  We therefore check by NAME for
+            // BOLT's plt_call/plt_branch stubs rather than relying on
+            // isExternal(), which may return false at PrePrune time for these
+            // symbols even though buildTables_ELF_ppc64 will later treat them
+            // as external.
+            bool IsPltStub = false;
+            if (Edge.getTarget().hasName()) {
+              StringRef TgtName = *Edge.getTarget().getName();
+              IsPltStub = TgtName.contains(".plt_call.") ||
+                          TgtName.contains(".plt_branch.");
+            }
+
+            if (!IsPltStub && !Edge.getTarget().isExternal()) {
+              // Local, non-plt target: leave as RequestCall.
+              // buildTables_ELF_ppc64 will convert it to CallBranchDelta
+              // (direct branch, no stub) — correct and efficient.
               continue;
             }
-            LLVM_DEBUG(dbgs()
-                       << "BOLT PPC64: converting RequestCall → "
-                          "RequestCallNoTOC for external target "
-                       << TgtName << "\n");
+
+            // Either a plt_call/plt_branch stub, or a genuinely external
+            // target.  Convert to RequestCallNoTOC so buildTables_ELF_ppc64
+            // generates a LongBranchNoTOC stub (PC-relative, works regardless
+            // of r2).  LongBranchSaveR2 stubs are broken here because $__GOT
+            // is allocated far from the original binary's TOC base.
+            //
+            // For plt_call/plt_branch stubs, lookup() will redirect the name
+            // to the real symbol address (or the stub's own address as a
+            // fallback).  LongBranchNoTOC then bctr's to the target with
+            // r12 = target address, satisfying the ELFv2 calling convention.
+            LLVM_DEBUG({
+              if (Edge.getTarget().hasName())
+                dbgs() << "BOLT PPC64: converting RequestCall → "
+                          "RequestCallNoTOC for "
+                       << (IsPltStub ? "plt stub " : "external ")
+                       << *Edge.getTarget().getName() << "\n";
+            });
             Edge.setKind(jitlink::ppc64::RequestCallNoTOC);
           }
         }
@@ -255,20 +270,17 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       // call/branch stubs by their BOLT-internal names, e.g.:
       //   "0000ba05.plt_call.sqrt@@GLIBC_2.17/1"
       //   "0000ba05.plt_branch.2c8e7:13/1"
-      // These stubs use TOC-relative addressing (addis r12,r2,N / ld r12,...)
-      // and only work when r2 holds the original TOC base.  When JITLink
-      // resolves an external symbol to one of these stub addresses, the
-      // LongBranchNoTOC stub loads the stub address into r12 and bctr's into
-      // it — which then hits __glink_PLTresolve with r12 = stub address and
-      // crashes.
+      // The PrePrune pass converts their RequestCall edges to RequestCallNoTOC
+      // so JITLink builds LongBranchNoTOC stubs for them.  Here we make
+      // LongBranchNoTOC as useful as possible by resolving the stub name to
+      // the actual target symbol address (when known), bypassing the original
+      // PLT stub entirely.  This avoids any TOC-relative load in the stub.
       //
-      // Fix: when the requested name looks like a plt_call/plt_branch stub,
-      // extract the real symbol name (the part after ".plt_call." or
-      // ".plt_branch.", stripping the trailing "/N" version suffix) and
-      // resolve that instead.  If no real name is present (anonymous numeric
-      // stubs like "2c8e7:13") or the real name cannot be resolved either,
-      // fall through to the normal 0-address fallback so JITLink emits its
-      // own PC-relative LongBranchNoTOC stub.
+      // For anonymous stubs (numeric names) or names we can't resolve, we fall
+      // through to the normal lookup path which finds the original stub's
+      // address via getBinaryDataByName.  The LongBranchNoTOC wrapper then
+      // bctr's into the original stub with r2 = original TOC base, and the
+      // stub's own TOC-relative load (ld r12,N(r2)) works correctly.
       if (IsPPC64) {
         StringRef SN(SymName);
         for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
@@ -340,9 +352,11 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
           // Could not resolve the real symbol name — fall through to the
           // normal lookup paths below.  For plt_call/plt_branch stubs the
           // normal path will find the stub's own address via
-          // getBinaryDataByName, which is correct: the CallBranchDelta edge
-          // will be patched to branch directly to the original TOC-relative
-          // stub (which works because r2 is preserved in BOLT-rewritten code).
+          // getBinaryDataByName (e.g. 0x12e6ef40), which is the original
+          // TOC-relative PLT stub.  The LongBranchNoTOC wrapper loads this
+          // address into r12 and bctr's into the stub.  The stub then runs
+          // with r2 = original TOC base (preserved by BOLT-rewritten callers),
+          // so its ld r12,N(r2) loads the correct PLT entry.
           errs() << "BOLT-PPC64-LOOKUP: " << SymName
                  << " -> (plt-stub fallthrough to original stub addr)\n";
           break;
