@@ -194,7 +194,7 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
             // function pointer and bctr's into it, which re-enters glink.
             // These stubs contain ".plt_call." or ".plt_branch." in their
             // name (BOLT's internal naming scheme).
-            StringRef TgtName = Edge.getTarget().getName();
+            StringRef TgtName = *Edge.getTarget().getName();
             if (TgtName.contains(".plt_call.") ||
                 TgtName.contains(".plt_branch.")) {
               // BOLT's plt_call/plt_branch stubs are TOC-relative code in
