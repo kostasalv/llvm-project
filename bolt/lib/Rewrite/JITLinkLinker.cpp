@@ -222,6 +222,73 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       std::string SymName = (*Symbol.first).str();
       LLVM_DEBUG(dbgs() << "BOLT: looking for " << SymName << "\n");
 
+      // PPC64 ELFv2: BOLT's object files reference the original binary's PLT
+      // call/branch stubs by their BOLT-internal names, e.g.:
+      //   "0000ba05.plt_call.sqrt@@GLIBC_2.17/1"
+      //   "0000ba05.plt_branch.2c8e7:13/1"
+      // These stubs use TOC-relative addressing (addis r12,r2,N / ld r12,...)
+      // and only work when r2 holds the original TOC base.  When JITLink
+      // resolves an external symbol to one of these stub addresses, the
+      // LongBranchNoTOC stub loads the stub address into r12 and bctr's into
+      // it — which then hits __glink_PLTresolve with r12 = stub address and
+      // crashes.
+      //
+      // Fix: when the requested name looks like a plt_call/plt_branch stub,
+      // extract the real symbol name (the part after ".plt_call." or
+      // ".plt_branch.", stripping the trailing "/N" version suffix) and
+      // resolve that instead.  If no real name is present (anonymous numeric
+      // stubs like "2c8e7:13") or the real name cannot be resolved either,
+      // fall through to the normal 0-address fallback so JITLink emits its
+      // own PC-relative LongBranchNoTOC stub.
+      if (IsPPC64) {
+        StringRef SN(SymName);
+        for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
+          auto Pos = SN.find(Marker);
+          if (Pos == StringRef::npos)
+            continue;
+          // Extract the real symbol name after the marker.
+          StringRef RealName = SN.drop_front(Pos + Marker.size());
+          // Strip trailing "/N" version suffix if present.
+          if (auto Slash = RealName.rfind('/'); Slash != StringRef::npos)
+            RealName = RealName.take_front(Slash);
+          // Skip anonymous numeric stubs (no real symbol name).
+          bool IsAnonymous = RealName.empty() ||
+                             (RealName[0] >= '0' && RealName[0] <= '9');
+          if (!IsAnonymous) {
+            std::string RealNameStr = RealName.str();
+            LLVM_DEBUG(dbgs() << "BOLT PPC64: redirecting PLT stub lookup "
+                               << SymName << " -> " << RealNameStr << "\n");
+            // Try to resolve the real symbol name.
+            if (auto SymInfo = Linker.lookupSymbolInfo(RealNameStr)) {
+              errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                     << " -> (plt-redirect) symtab 0x"
+                     << Twine::utohexstr(SymInfo->Address) << "\n";
+              AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                  orc::ExecutorAddr(SymInfo->Address), JITSymbolFlags());
+              goto next_symbol;
+            }
+            if (const BinaryData *I =
+                    Linker.BC.getBinaryDataByName(RealNameStr)) {
+              uint64_t Address = I->isMoved() && !I->isJumpTable()
+                                     ? I->getOutputAddress()
+                                     : I->getAddress();
+              errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                     << " -> (plt-redirect) BinaryData 0x"
+                     << Twine::utohexstr(Address) << "\n";
+              AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                  orc::ExecutorAddr(Address), JITSymbolFlags());
+              goto next_symbol;
+            }
+          }
+          // Anonymous stub or unresolvable real name — fall through to 0.
+          errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                 << " -> (plt-stub skipped) 0x0\n";
+          AllResults[Symbol.first] =
+              orc::ExecutorSymbolDef(orc::ExecutorAddr(0), JITSymbolFlags());
+          goto next_symbol;
+        }
+      }
+
       if (auto SymInfo = Linker.lookupSymbolInfo(SymName)) {
         LLVM_DEBUG(dbgs() << "Resolved to address 0x"
                           << Twine::utohexstr(SymInfo->Address) << "\n");
@@ -270,6 +337,7 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
         errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> UNRESOLVED (0x0)\n";
       AllResults[Symbol.first] =
           orc::ExecutorSymbolDef(orc::ExecutorAddr(0), JITSymbolFlags());
+    next_symbol:;
     }
 
     LC->run(std::move(AllResults));
