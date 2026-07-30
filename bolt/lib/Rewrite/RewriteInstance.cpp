@@ -6553,7 +6553,27 @@ uint64_t RewriteInstance::getNewFunctionAddress(uint64_t OldAddress) {
   if (Function->isFolded())
     Function = Function->getFoldedIntoFunction();
 
-  return Function->getOutputAddress();
+  uint64_t OutputAddress = Function->getOutputAddress();
+
+  // PPC64 ELFv2: function pointers stored in data sections (.init_array,
+  // .fini_array, .data.rel.ro, .got, DT_INIT/DT_FINI, e_entry) must point to
+  // the Local Entry Point (LEP), not the Global Entry Point (GEP).
+  //
+  // BOLT-rewritten PPC64 functions always begin with a 2-instruction GEP
+  // prologue (addis r2,r12,N; addi r2,r2,M) that recomputes r2 from r12.
+  // This prologue is only correct when the function is entered via an
+  // inter-module call where r12 holds the function address. For intra-binary
+  // calls (including C runtime calls via function pointer), the caller already
+  // has the correct r2, so the LEP (GEP+8) must be used to skip the prologue.
+  //
+  // BinaryEmitter sets st_other = 0x60 (LEP offset = 8) on emitted symbols,
+  // which handles bl-based calls through JITLink. Here we apply the same +8
+  // adjustment to all function-pointer-style references patched by BOLT.
+  if (BC->isPPC64() && Function->isEmitted())
+    OutputAddress += ELF::decodePPC64LocalEntryOffset(
+        (3u << ELF::STO_PPC64_LOCAL_BIT) & ELF::STO_PPC64_LOCAL_MASK);
+
+  return OutputAddress;
 }
 
 uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
