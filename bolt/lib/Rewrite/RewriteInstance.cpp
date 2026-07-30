@@ -6331,6 +6331,75 @@ void RewriteInstance::patchELFGOT(ELFObjectFile<ELFT> *File) {
 }
 
 template <typename ELFT>
+void RewriteInstance::patchELFFuncArraysPPC64(ELFObjectFile<ELFT> *File) {
+  if (!BC->isPPC64())
+    return;
+
+  raw_fd_ostream &OS = Out->os();
+  const bool IsLE = BC->AsmInfo->isLittleEndian();
+
+  // Patch every pointer-sized entry in .init_array and .fini_array.
+  // For PPC64 ELFv2, the C runtime calls these function pointers directly
+  // (not via bl), so they must point to the Local Entry Point (GEP+8) rather
+  // than the Global Entry Point for functions that have a TOC-setup prologue.
+  for (const SectionRef &Section : File->sections()) {
+    StringRef SectionName = cantFail(Section.getName());
+    if (SectionName != ".init_array" && SectionName != ".fini_array")
+      continue;
+
+    StringRef Contents = cantFail(Section.getContents());
+    const uint64_t EntrySize = 8; // PPC64 is always 64-bit
+    const char *Data = File->getData().data();
+
+    for (uint64_t Offset = 0; Offset + EntrySize <= Contents.size();
+         Offset += EntrySize) {
+      uint64_t Entry = IsLE
+          ? support::endian::read64le(Contents.data() + Offset)
+          : support::endian::read64be(Contents.data() + Offset);
+
+      if (!Entry)
+        continue;
+
+      // Check if this entry points to a function with a GEP prologue.
+      auto SecOrErr = BC->getSectionForAddress(Entry);
+      if (!SecOrErr)
+        continue;
+      const BinarySection &FuncSec = *SecOrErr;
+      if (!FuncSec.isText())
+        continue;
+      const uint8_t *FuncBytes =
+          FuncSec.getData() + (Entry - FuncSec.getAddress());
+      const bool HasGEPPrologue =
+          IsLE ? (FuncBytes[2] == 0x4c && FuncBytes[3] == 0x3c)
+               : (FuncBytes[0] == 0x3c && FuncBytes[1] == 0x4c);
+      if (!HasGEPPrologue)
+        continue;
+
+      // Also update the pointer if BOLT moved the function.
+      uint64_t NewEntry = Entry;
+      if (uint64_t MovedAddr = getNewFunctionAddress(Entry))
+        NewEntry = MovedAddr; // already has +8 from getNewFunctionAddress
+      else
+        NewEntry = Entry + 8; // non-emitted: just skip GEP prologue
+
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching " << SectionName
+                        << " entry 0x" << Twine::utohexstr(Entry) << " -> 0x"
+                        << Twine::utohexstr(NewEntry) << '\n');
+
+      uint64_t FileOffset =
+          reinterpret_cast<const char *>(Contents.data() + Offset) - Data;
+      if (IsLE) {
+        uint64_t LE = support::endian::byte_swap<uint64_t, llvm::endianness::little>(NewEntry);
+        OS.pwrite(reinterpret_cast<const char *>(&LE), EntrySize, FileOffset);
+      } else {
+        uint64_t BE = support::endian::byte_swap<uint64_t, llvm::endianness::big>(NewEntry);
+        OS.pwrite(reinterpret_cast<const char *>(&BE), EntrySize, FileOffset);
+      }
+    }
+  }
+}
+
+template <typename ELFT>
 void RewriteInstance::patchELFDynamic(ELFObjectFile<ELFT> *File) {
   if (BC->IsStaticExecutable)
     return;
@@ -6846,6 +6915,12 @@ void RewriteInstance::rewriteFile() {
     patchELFGOT();
   }
 
+  // PPC64 ELFv2: patch .init_array and .fini_array to use LEP (GEP+8)
+  // for functions with a TOC-setup prologue. This is required for both
+  // relocation and non-relocation (stripped) modes.
+  if (BC->isPPC64())
+    patchELFFuncArraysPPC64();
+
   // Patch dynamic section/segment.
   patchELFDynamic();
 
@@ -6982,16 +7057,46 @@ void RewriteInstance::writeEHFrameHeader() {
 }
 
 uint64_t RewriteInstance::getNewValueForSymbol(const StringRef Name) {
+  uint64_t Address = 0;
   auto Value = Linker->lookupSymbolInfo(Name);
   if (Value)
-    return Value->Address;
+    Address = Value->Address;
 
-  // Return the original value if we haven't emitted the symbol.
-  BinaryData *BD = BC->getBinaryDataByName(Name);
-  if (!BD)
-    return 0;
+  if (!Address) {
+    // Return the original value if we haven't emitted the symbol.
+    BinaryData *BD = BC->getBinaryDataByName(Name);
+    if (!BD)
+      return 0;
+    Address = BD->getAddress();
+  }
 
-  return BD->getAddress();
+  // PPC64 ELFv2: relocations in .init_array, .fini_array, and .data.rel.ro
+  // store function pointers that the C runtime calls directly.  These must
+  // point to the Local Entry Point (GEP+8) rather than the Global Entry Point,
+  // otherwise the GEP prologue (addis r2,r12,N; addi r2,r2,M) fires and
+  // corrupts the TOC pointer.  Detect the prologue by inspecting the original
+  // binary bytes at the function's original address.
+  if (BC->isPPC64() && Address) {
+    // Find the BinaryFunction via its symbol name so we get the original
+    // address regardless of whether the function was moved by BOLT.
+    BinaryData *BD = BC->getBinaryDataByName(Name);
+    uint64_t OrigAddr = BD ? BD->getAddress() : Address;
+    const BinaryFunction *BF = BC->getBinaryFunctionAtAddress(OrigAddr);
+    if (BF) {
+      if (auto SecOrErr = BC->getSectionForAddress(OrigAddr)) {
+        const BinarySection &Sec = *SecOrErr;
+        const uint8_t *Bytes = Sec.getData() + (OrigAddr - Sec.getAddress());
+        const bool IsLE = BC->AsmInfo->isLittleEndian();
+        const bool HasGEPPrologue =
+            IsLE ? (Bytes[2] == 0x4c && Bytes[3] == 0x3c)
+                 : (Bytes[0] == 0x3c && Bytes[1] == 0x4c);
+        if (HasGEPPrologue)
+          Address += 8;
+      }
+    }
+  }
+
+  return Address;
 }
 
 uint64_t RewriteInstance::getFileOffsetForAddress(uint64_t Address) const {

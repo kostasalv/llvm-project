@@ -346,6 +346,11 @@ private:
   /// Patch .got
   ELF_FUNCTION(void, patchELFGOT);
 
+  /// PPC64 ELFv2: patch .init_array and .fini_array entries to use the Local
+  /// Entry Point (GEP+8) instead of the Global Entry Point for functions that
+  /// begin with the TOC-setup prologue (addis r2,r12,N; addi r2,r2,M).
+  ELF_FUNCTION(void, patchELFFuncArraysPPC64);
+
   /// Patch allocatable relocation sections.
   ELF_FUNCTION(void, patchELFAllocatableRelaSections);
 
