@@ -19,9 +19,11 @@
 #include "bolt/Target/PowerPC/PPCMCPlusBuilder.h"
 #include "bolt/Utils/CommandLineOpts.h"
 #include "bolt/Utils/Utils.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/DebugInfo/DWARF/DWARFCompileUnit.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/SMLoc.h"
@@ -361,6 +363,27 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function,
   } else {
     Streamer.emitSymbolAttribute(StartSymbol, MCSA_ELF_TypeFunction);
     Streamer.emitLabel(StartSymbol);
+  }
+
+  // PPC64 ELFv2: encode local entry point offset in st_other for every
+  // BOLT-rewritten function.  BOLT always emits a 2-instruction GEP prologue
+  // (addis r2,r12,N; addi r2,r2,M) before the local entry point, so the
+  // local entry is always 8 bytes past the global entry.  Without this,
+  // R_PPC64_REL24 relocations in the emitted .o use addend 0 (LEP offset 0),
+  // causing JITLink to target the GEP which recomputes r2 from r12 and
+  // corrupts the TOC pointer for intra-binary calls.
+  //
+  // Encoding: Val=3 → ((1<<3)>>2)<<2 = 8 bytes → st_other |= (3<<5) = 0x60
+  if (BC.isPPC64() && FF.isMainFragment()) {
+    constexpr unsigned PPC64LEPOffset8 =
+        (3u << ELF::STO_PPC64_LOCAL_BIT) & ELF::STO_PPC64_LOCAL_MASK;
+    for (MCSymbol *Symbol : Function.getSymbols()) {
+      auto *ELFSym = static_cast<MCSymbolELF *>(Symbol);
+      unsigned Other = ELFSym->getOther();
+      Other &= ~ELF::STO_PPC64_LOCAL_MASK;
+      Other |= PPC64LEPOffset8;
+      ELFSym->setOther(Other);
+    }
   }
 
   const bool NeedsFDE =
