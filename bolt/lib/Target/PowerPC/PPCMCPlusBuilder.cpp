@@ -130,6 +130,7 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
 
   // Conditional relative branch: BO, BI, BD
   case PPC::BC:
+  case PPC::gBC:  // bt/bf mnemonics (alias for BC with specific BO values)
     return 2;
 
   // Absolute branches/calls (AA=1) — no PC-relative operand
@@ -263,6 +264,8 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   case PPC::BLA:   // absolute branch with link
   case PPC::BC:    // conditional branch
   case PPC::BCL:   // conditional branch with link
+  case PPC::gBC:   // bt/bf mnemonics (generic conditional branch with BO field)
+  case PPC::gBCL:  // btl/bfl mnemonics (conditional branch with link)
   case PPC::BDNZ:  // decrement CTR and branch if not zero
   case PPC::BDNZL: // decrement CTR and branch with link
   case PPC::BCTR:  // branch to CTR
@@ -288,6 +291,8 @@ bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   switch (opc(I)) {
   case PPC::BC:  // branch conditional
   case PPC::BCL: // branch conditional to link
+  case PPC::gBC:  // bt/bf mnemonics
+  case PPC::gBCL: // btl/bfl mnemonics
     return true;
   default:
     return false;
