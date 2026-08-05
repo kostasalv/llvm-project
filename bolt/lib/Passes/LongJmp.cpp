@@ -551,7 +551,14 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   const BinaryFunction &Func = *BB.getFunction();
   const BinaryContext &BC = Func.getBinaryContext();
   const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(Inst);
-  assert(TgtSym && "getTargetSymbol failed");
+  // PPC64: some direct branch variants (e.g. absolute BLA, or branches whose
+  // target is an immediate not yet symbolized) may not yield a symbol.
+  // These cannot be range-checked, so conservatively skip stub insertion.
+  if (!TgtSym) {
+    if (BC.isPPC64())
+      return false;
+    assert(TgtSym && "getTargetSymbol failed");
+  }
 
   const BinaryBasicBlock *TgtBB = Func.getBasicBlockForLabel(TgtSym);
   // Check for shared stubs from foreign functions
