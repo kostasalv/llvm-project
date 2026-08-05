@@ -179,6 +179,14 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   }
 }
 
+// PPC64 unconditional branch (b / bl) uses a 26-bit signed LI field → ±32MB.
+int PPCMCPlusBuilder::getUncondBranchEncodingSize() const { return 26; }
+
+// PPC64 has no intermediate "short jump" encoding — the only single-instruction
+// unconditional branch is 'b' (26-bit). Return the same value so the short-jmp
+// relaxation path in LongJmpPass::relaxStub is effectively skipped.
+int PPCMCPlusBuilder::getShortJmpEncodingSize() const { return 26; }
+
 void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
                                      const MCSymbol *Target, MCContext *Ctx,
                                      bool IsTailCall) {

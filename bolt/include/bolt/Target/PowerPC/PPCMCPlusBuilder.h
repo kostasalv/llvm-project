@@ -26,6 +26,15 @@ public:
   int getPCRelOperandNum(const MCInst &Inst) const;
   int getPCRelEncodingSize(const MCInst &Inst) const override;
 
+  /// Return the number of bits in the PC-relative offset of an unconditional
+  /// branch instruction (26 for PPC64 'b', giving ±32MB reach).
+  int getUncondBranchEncodingSize() const override;
+
+  /// Return the number of bits in the PC-relative offset of a "short" jump.
+  /// PPC64 has no intermediate encoding — return 26 (same as uncond branch)
+  /// so LongJmpPass skips the short-jmp relaxation step.
+  int getShortJmpEncodingSize() const override;
+
   void createLongJmp(InstructionListType &Seq, const MCSymbol *Target,
                      MCContext *Ctx, bool IsTailCall = false) override;
 
