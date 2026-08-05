@@ -24,6 +24,10 @@ public:
                                 uint64_t Size = 0) const override;
   bool hasPCRelOperand(const MCInst &I) const override;
   int getPCRelOperandNum(const MCInst &Inst) const;
+  int getPCRelEncodingSize(const MCInst &Inst) const override;
+
+  void createLongJmp(InstructionListType &Seq, const MCSymbol *Target,
+                     MCContext *Ctx, bool IsTailCall = false) override;
 
   int getMemoryOperandNo(const MCInst &Inst) const override;
 

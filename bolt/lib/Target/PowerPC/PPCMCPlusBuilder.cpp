@@ -28,7 +28,6 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-// #include "MCTargetDesc/PPCMCTargetDesc.h"
 #include <optional>
 #include <string>
 
@@ -145,6 +144,110 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   default:
     return -1;
   }
+}
+
+int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
+  switch (Inst.getOpcode()) {
+  // Unconditional branch / call: 26-bit signed offset (±32MB)
+  case PPC::B:
+  case PPC::BL:
+  case PPC::BL8:
+  case PPC::BL8_TLS:
+  case PPC::BL8_TLS_:
+  case PPC::BL8_NOP:
+  case PPC::BL8_NOP_TLS:
+  case PPC::BL8_NOTOC:
+  case PPC::BL8_NOTOC_TLS:
+  case PPC::BL8_RM:
+  case PPC::BL8_NOP_RM:
+  case PPC::BL8_NOTOC_RM:
+    return 26;
+  // Conditional branch: 16-bit signed offset (±32KB)
+  case PPC::BC:
+  case PPC::gBC:
+  case PPC::BCL:
+  case PPC::gBCL:
+    return 16;
+  default:
+    return 0;
+  }
+}
+
+void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
+                                     const MCSymbol *Target, MCContext *Ctx,
+                                     bool IsTailCall) {
+  // PPC64 ELFv2 absolute jump via CTR using r12 (scratch/callee-clobber).
+  // This sequence loads a full 64-bit address into r12 and jumps via CTR:
+  //   lis8  r12, target@highest    ; r12 = bits[63:48]
+  //   ori8  r12, r12, target@higher ; r12 |= bits[47:32]
+  //   rldicr r12, r12, 32, 31     ; r12 <<= 32 (shift high half into place)
+  //   oris8 r12, r12, target@h    ; r12 |= bits[31:16]
+  //   ori8  r12, r12, target@l    ; r12 |= bits[15:0]
+  //   mtctr r12                   ; CTR = r12
+  //   bctr / bctrl                ; jump to CTR
+  //
+  // r12 is the ELFv2 ABI "function entry address" register used by GEP
+  // prologues to reconstruct r2/TOC, so reusing it here is ABI-correct.
+  // Same instruction sequence as buildCallStubAbsolute().
+  const unsigned R12 = PPC::X12;
+
+  const MCExpr *HST = MCSymbolRefExpr::create(Target, PPC::S_HIGHEST, *Ctx);
+  const MCExpr *HER = MCSymbolRefExpr::create(Target, PPC::S_HIGHER, *Ctx);
+  const MCExpr *HI  = MCSymbolRefExpr::create(Target, PPC::S_HI, *Ctx);
+  const MCExpr *LO  = MCSymbolRefExpr::create(Target, PPC::S_LO, *Ctx);
+
+  MCInst I;
+
+  // lis8 r12, target@highest
+  I = MCInst();
+  I.setOpcode(PPC::LIS8);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createExpr(HST));
+  Seq.emplace_back(I);
+
+  // ori8 r12, r12, target@higher
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createExpr(HER));
+  Seq.emplace_back(I);
+
+  // rldicr r12, r12, 32, 31
+  I = MCInst();
+  I.setOpcode(PPC::RLDICR);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createImm(32));
+  I.addOperand(MCOperand::createImm(31));
+  Seq.emplace_back(I);
+
+  // oris8 r12, r12, target@h
+  I = MCInst();
+  I.setOpcode(PPC::ORIS8);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createExpr(HI));
+  Seq.emplace_back(I);
+
+  // ori8 r12, r12, target@l
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createExpr(LO));
+  Seq.emplace_back(I);
+
+  // mtctr r12
+  I = MCInst();
+  I.setOpcode(PPC::MTCTR8);
+  I.addOperand(MCOperand::createReg(R12));
+  Seq.emplace_back(I);
+
+  // bctr (tail call) or bctrl (regular call)
+  I = MCInst();
+  I.setOpcode(IsTailCall ? PPC::BCTR8 : PPC::BCTRL8);
+  Seq.emplace_back(I);
 }
 
 int PPCMCPlusBuilder::getMemoryOperandNo(const MCInst & /*Inst*/) const {
