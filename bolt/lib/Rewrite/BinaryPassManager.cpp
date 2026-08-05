@@ -546,6 +546,11 @@ Error BinaryFunctionPassManager::runAllPasses(BinaryContext &BC) {
         std::make_unique<PointerAuthCFIFixup>(PrintPAuthCFIFixup));
   }
 
+  // PPC64 ELFv2: insert long-jump stubs for bl instructions that exceed the
+  // ±32MB range limit after BOLT moves functions to a new segment.
+  if (BC.isPPC64())
+    Manager.registerPass(std::make_unique<LongJmpPass>(PrintLongJmp));
+
   // This pass should always run last.*
   Manager.registerPass(std::make_unique<FinalizeFunctions>(PrintFinalized));
 

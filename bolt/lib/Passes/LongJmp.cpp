@@ -531,9 +531,9 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
     return Error::success();
   }
 
-  // The long jmp uses absolute address on AArch64
-  // So we could not use it for PIC binaries
-  if (BC.isAArch64() && !BC.HasFixedLoadAddress)
+  // The long jmp uses absolute address on AArch64 and PPC64.
+  // So we could not use it for PIC binaries.
+  if ((BC.isAArch64() || BC.isPPC64()) && !BC.HasFixedLoadAddress)
     return createFatalBOLTError(
         "BOLT-ERROR: Unable to relax stub for PIC binary\n");
 
@@ -576,8 +576,8 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
 Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
   const BinaryContext &BC = Func.getBinaryContext();
 
-  assert(BC.isAArch64() && "Unsupported arch");
-  constexpr int InsnSize = 4; // AArch64
+  assert((BC.isAArch64() || BC.isPPC64()) && "Unsupported arch");
+  constexpr int InsnSize = 4; // AArch64 and PPC64 both use 4-byte instructions
   std::vector<std::pair<BinaryBasicBlock *, std::unique_ptr<BinaryBasicBlock>>>
       Insertions;
 
