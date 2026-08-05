@@ -238,9 +238,9 @@ Error BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
     // without symbol information. The call site table Start offset may not
     // align with a disassembled instruction boundary (e.g., the GEP prologue
     // occupies offsets 0-7 but LSDA ranges may reference offset 8 = LEP).
-    // Rather than asserting, skip this call site entry — the function will be
-    // handled conservatively (not rewritten for exception handling purposes).
-    if (II == IE) {
+    // Skip this call site entry so BOLT handles the function conservatively
+    // (not rewritten for exception handling purposes) rather than asserting.
+    if (BC.isPPC64() && II == IE) {
       if (opts::Verbosity >= 1)
         BC.errs() << "BOLT-WARNING: exception range start 0x"
                   << Twine::utohexstr(Start)
@@ -248,6 +248,7 @@ Error BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
                   << " - skipping call site entry.\n";
       continue;
     }
+    assert(II != IE && "exception range not pointing to an instruction");
     do {
       MCInst &Instruction = II->second;
       if (BC.MIB->isCall(Instruction) &&
