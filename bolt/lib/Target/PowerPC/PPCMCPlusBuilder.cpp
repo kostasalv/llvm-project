@@ -296,7 +296,7 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
   const MCOperand &Op = Inst.getOperand(EffectiveOp);
   if (!Op.isExpr())
     return nullptr;
-  return getTargetSymbol(Op.getExpr());
+  return MCPlusBuilder::getTargetSymbol(Op.getExpr());
 }
 
 bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
