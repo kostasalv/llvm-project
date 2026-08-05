@@ -67,6 +67,10 @@ public:
   /// Create a return instruction (blr on PPC64).
   void createReturn(MCInst &Inst) const override;
 
+  /// Create an unconditional branch to TBB (b <target> on PPC64).
+  void createUncondBranch(MCInst &Inst, const MCSymbol *TBB,
+                          MCContext *Ctx) const override;
+
   bool analyzeBranch(InstructionIterator Begin, InstructionIterator End,
                      const llvm::MCSymbol *&Tgt,
                      const llvm::MCSymbol *&Fallthrough, llvm::MCInst *&CondBr,
