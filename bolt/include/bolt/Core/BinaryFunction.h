@@ -1807,6 +1807,11 @@ public:
   }
 
   void addCFIInstruction(uint64_t Offset, MCCFIInstruction &&Inst) {
+    // PPC64 ELFv2: long_branch thunk stubs synthesized by the linker have an
+    // FDE in .eh_frame but no disassembled instructions (BOLT skips them).
+    // Silently drop CFI for such empty functions rather than asserting.
+    if (BC.isPPC64() && Instructions.empty())
+      return;
     assert(!Instructions.empty());
 
     // Fix CFI instructions skipping NOPs. We need to fix this because changing
