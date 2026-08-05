@@ -280,9 +280,23 @@ bool PPCMCPlusBuilder::isIndirectBranch(const MCInst &I) const {
 
 const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
                                                   unsigned OpNum) const {
-  (void)Inst;
-  (void)OpNum;
-  return nullptr;
+  // If OpNum was not explicitly specified by the caller, find it via
+  // getPCRelOperandNum (the same operand used by evaluateBranch).
+  // This is needed by LongJmpPass::needsStub() which calls
+  // getTargetSymbol(Inst) with the default OpNum=0 for all branch/call insns.
+  int PCRelOp = getPCRelOperandNum(Inst);
+  if (PCRelOp < 0)
+    return nullptr;
+  // Use the PC-relative operand index unless the caller passed an explicit one.
+  unsigned EffectiveOp = (OpNum == 0 && (unsigned)PCRelOp != 0)
+                             ? (unsigned)PCRelOp
+                             : OpNum;
+  if (EffectiveOp >= Inst.getNumOperands())
+    return nullptr;
+  const MCOperand &Op = Inst.getOperand(EffectiveOp);
+  if (!Op.isExpr())
+    return nullptr;
+  return getTargetSymbol(Op.getExpr());
 }
 
 bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
