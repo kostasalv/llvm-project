@@ -124,12 +124,18 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   case PPC::BL8_RM:
   case PPC::BL8_NOP_RM:
   case PPC::BL8_NOTOC_RM:
+  case PPC::BL8_LDinto_toc:
+  case PPC::BL8_LDinto_toc_RM:
   case PPC::B:             // unconditional relative branch
+  case PPC::BDNZ:          // decrement CTR, branch if not zero
+  case PPC::BDNZL:         // decrement CTR, branch with link if not zero
     return 0;
 
-  // Conditional relative branch: BO, BI, BD
+  // Conditional relative branch: BO, BI, BD (target at operand 2)
   case PPC::BC:
+  case PPC::BCL:
   case PPC::gBC:  // bt/bf mnemonics (alias for BC with specific BO values)
+  case PPC::gBCL:
     return 2;
 
   // Absolute branches/calls (AA=1) — no PC-relative operand
