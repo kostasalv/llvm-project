@@ -234,7 +234,20 @@ Error BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
     // Mark all call instructions in the range.
     auto II = Instructions.find(Start);
     auto IE = Instructions.end();
-    assert(II != IE && "exception range not pointing to an instruction");
+    // PPC64 ELFv2: stripped binaries synthesize functions from .eh_frame FDEs
+    // without symbol information. The call site table Start offset may not
+    // align with a disassembled instruction boundary (e.g., the GEP prologue
+    // occupies offsets 0-7 but LSDA ranges may reference offset 8 = LEP).
+    // Rather than asserting, skip this call site entry — the function will be
+    // handled conservatively (not rewritten for exception handling purposes).
+    if (II == IE) {
+      if (opts::Verbosity >= 1)
+        BC.errs() << "BOLT-WARNING: exception range start 0x"
+                  << Twine::utohexstr(Start)
+                  << " not pointing to an instruction in function " << *this
+                  << " - skipping call site entry.\n";
+      continue;
+    }
     do {
       MCInst &Instruction = II->second;
       if (BC.MIB->isCall(Instruction) &&
