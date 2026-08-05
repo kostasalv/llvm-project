@@ -592,6 +592,17 @@ void PPCMCPlusBuilder::createReturn(MCInst &Inst) const {
   Inst.setOpcode(PPC::BLR);
 }
 
+void PPCMCPlusBuilder::createUncondBranch(MCInst &Inst, const MCSymbol *TBB,
+                                          MCContext *Ctx) const {
+  // Emit a direct unconditional branch: b <target>
+  // Operand 0 is the target symbol expression (PC-relative, ±32MB).
+  // If the target is out of range, LongJmpPass will relax this stub to a
+  // full 7-instruction absolute sequence via createLongJmp().
+  Inst.clear();
+  Inst.setOpcode(PPC::B);
+  Inst.addOperand(MCOperand::createExpr(MCSymbolRefExpr::create(TBB, *Ctx)));
+}
+
 bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
                                      InstructionIterator End,
                                      const MCSymbol *&Tgt,
