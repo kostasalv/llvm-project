@@ -3210,7 +3210,8 @@ static bool shouldUsePPCAbsoluteCallStub(const RelocationRef &Rel,
 
 static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
                                                       MCSymbol &TargetSym,
-                                                      MCPlusBuilder &MIB) {
+                                                      MCPlusBuilder &MIB,
+                                                      uint64_t ThunkAddress) {
   std::string StubName =
       ("__bolt_ppc_abs_call_stub." + TargetSym.getName()).str();
 
@@ -3251,123 +3252,85 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
          << " TOCBase=" << Twine::utohexstr(BC.PPC64TOCBase)
          << " sym=" << SymName << "\n";
 
-  if (IsPLTThunk && BC.PPC64TOCBase != 0) {
-    // MCContext appends a "/N" version suffix to symbol names to disambiguate
-    // multiple definitions (e.g. "0000d4fc.plt_call.getenv@@GLIBC_2.17/1").
-    // BinaryData stores the original name without this suffix, so strip it
-    // before looking up.
-    StringRef LookupName = SymName;
-    if (auto Slash = LookupName.rfind('/'); Slash != StringRef::npos)
-      LookupName = LookupName.take_front(Slash);
+  if (IsPLTThunk && BC.PPC64TOCBase != 0 && ThunkAddress != 0) {
+    // Use the thunk address passed by the caller to read its raw bytes.
+    // getBinaryDataByName() won't find local symbols, so we go directly
+    // to the section contents via getSectionForAddress().
+    errs() << "BOLT-PPC64-STUB-LOOKUP: using ThunkAddress="
+           << Twine::utohexstr(ThunkAddress) << "\n";
 
-    errs() << "BOLT-PPC64-STUB-LOOKUP: trying BinaryData name='" << LookupName << "'\n";
+    if (auto SecOrErr = BC.getSectionForAddress(ThunkAddress)) {
+      const BinarySection &Sec = *SecOrErr;
+      const uint8_t *Data = Sec.getData();
+      uint64_t SecBase = Sec.getAddress();
 
-    // Find the BinaryData for the PLT thunk to get its raw bytes.
-    if (const BinaryData *BD = BC.getBinaryDataByName(LookupName)) {
-      errs() << "BOLT-PPC64-STUB-LOOKUP: found at addr=" << Twine::utohexstr(BD->getAddress()) << "\n";
-      uint64_t ThunkAddr = BD->getAddress();
-      // The PPC64 ELFv2 PLT call stub layout is:
-      //   [0] std  r2, 24(r1)         (optional, 4 bytes)
-      //   [4] ld   r12, offset(r2)    (4 bytes)  ← we want "offset"
-      //   [8] mtctr r12               (4 bytes)
-      //  [12] bctr                    (4 bytes)
-      // OR the thunk may start directly with "ld r12, offset(r2)" (no std).
-      // We scan the first 8 bytes looking for an LD instruction encoding.
-      //
-      // PPC64 LD instruction: bits[31:26]=58 (0b111010), bits[1:0]=0 (DS-form)
-      // Encoding: [opcode:6][RT:5][RA:5][DS:14][00:2]
-      // For "ld r12, offset(r2)": RT=12, RA=2
-      // In little-endian: bytes are reversed per 4-byte word.
-      if (auto SecOrErr = BC.getSectionForAddress(ThunkAddr)) {
-        const BinarySection &Sec = *SecOrErr;
-        const uint8_t *Data = Sec.getData();
-        uint64_t SecBase = Sec.getAddress();
+      auto readLE32 = [&](uint64_t Addr) -> uint32_t {
+        uint64_t Off = Addr - SecBase;
+        if (Off + 4 > Sec.getSize())
+          return 0;
+        const uint8_t *P = Data + Off;
+        return (uint32_t)P[0] | ((uint32_t)P[1] << 8) |
+               ((uint32_t)P[2] << 16) | ((uint32_t)P[3] << 24);
+      };
 
-        auto readLE32 = [&](uint64_t Addr) -> uint32_t {
-          uint64_t Off = Addr - SecBase;
-          if (Off + 4 > Sec.getSize())
-            return 0;
-          const uint8_t *P = Data + Off;
-          return (uint32_t)P[0] | ((uint32_t)P[1] << 8) |
-                 ((uint32_t)P[2] << 16) | ((uint32_t)P[3] << 24);
-        };
+      // PPC64 ELFv2 PLT call stub layout:
+      //   [0] std  r2, 24(r1)         (optional)
+      //   [4] ld   r12, offset(r2)    <- we want this offset
+      //   [8] mtctr r12
+      //  [12] bctr
+      // OR starts directly with ld r12, offset(r2).
+      // Scan first two words for "ld r12, offset(r2)".
+      // PPC64LE: instruction word stored little-endian; readLE32 gives
+      // bits[31:26]=opcode, [25:21]=RT, [20:16]=RA, [15:0]=DS-displacement.
+      auto isLDr12r2 = [](uint32_t Word) -> bool {
+        uint32_t Op = (Word >> 26) & 0x3F;
+        uint32_t RT = (Word >> 21) & 0x1F;
+        uint32_t RA = (Word >> 16) & 0x1F;
+        uint32_t XO = Word & 0x3;
+        return Op == 58 && RT == 12 && RA == 2 && XO == 0;
+      };
 
-        // Scan first two words for "ld r12, offset(r2)"
-        // Big-endian word: opcode=58, RT=12, RA=2 → 0xE9820000 | (ds<<2)
-        // Little-endian stored bytes: word = 0xE9820000 | (ds_field<<2)
-        // but read as LE32, bits[31:26]=0x3A=58, RT=bits[25:21]=12,
-        // RA=bits[20:16]=2, DS=bits[15:2]
-        // In LE memory the 4-byte word appears byte-swapped:
-        // byte0=low8, byte1=next8, byte2=next8, byte3=high8
-        // Word value (LE): 0x..E9.. for ld — let's match by opcode+regs.
-        // Opcode 58 = 0x3A in bits[31:26] → high byte = 0xE8..0xEB
-        // For ld (DS[1:0]=0b00): top byte = 0xE8 or 0xE9
-        // RT=12=0xC, RA=2=0x2 → second byte = (12<<5|2<<0)... wait, BE layout:
-        // BE: [op:6][RT:5][RA:5][DS:14][xx:2]
-        //      bits 31..26  25..21  20..16  15..2   1..0
-        // In BE32: op=58=0b111010, RT=12, RA=2
-        //   BE32 = (58<<26)|(12<<21)|(2<<16)|(ds_val<<2)
-        //        = 0xE9820000 | (ds_val << 2)
-        // Stored LE: byte0 = low8 of BE32, ...
-        // LE32 read = bswap(BE32) = ((ds_val<<2)&0xFF)<<24 | 0x82<<16 | ...
-        // Actually for LE PPC the instruction BYTES are big-endian within
-        // the 4-byte word but the WORD itself is stored in native order.
-        // PPC64LE: each 4-byte instruction word is stored little-endian.
-        // So readLE32 gives us the instruction as a 32-bit value where
-        // bits[31:26] = opcode = 58, bits[25:21]=RT, bits[20:16]=RA, etc.
-        // readLE32 of a LE-stored PPC64 instruction gives the correct bit layout.
+      auto getLDoffset = [](uint32_t Word) -> int64_t {
+        // bits[15:0] of DS-form LD = signed 16-bit byte offset (bottom 2 bits 0)
+        return (int64_t)(int16_t)(Word & 0xFFFF);
+      };
 
-        auto isLDr12r2 = [](uint32_t Word) -> bool {
-          uint32_t Op  = (Word >> 26) & 0x3F; // opcode
-          uint32_t RT  = (Word >> 21) & 0x1F; // destination reg
-          uint32_t RA  = (Word >> 16) & 0x1F; // base reg
-          uint32_t XO  = Word & 0x3;           // DS-form: must be 0b00
-          return Op == 58 && RT == 12 && RA == 2 && XO == 0;
-        };
+      uint32_t W0 = readLE32(ThunkAddress);
+      uint32_t W1 = readLE32(ThunkAddress + 4);
+      errs() << "BOLT-PPC64-STUB-LOOKUP: W0=" << Twine::utohexstr(W0)
+             << " W1=" << Twine::utohexstr(W1) << "\n";
 
-        auto getLDoffset = [](uint32_t Word) -> int64_t {
-          // DS-form LD: bits[15:0] of the instruction word hold the
-          // byte displacement with bottom 2 bits forced to 0.
-          // Treating bits[15:0] as a signed 16-bit integer gives the
-          // correct signed byte offset directly (the bottom 2 bits are 0).
-          return (int64_t)(int16_t)(Word & 0xFFFF);
-        };
+      int64_t Offset = 0;
+      bool FoundLD = false;
 
-        uint32_t W0 = readLE32(ThunkAddr);
-        uint32_t W1 = readLE32(ThunkAddr + 4);
-
-        int64_t Offset = 0;
-        bool FoundLD = false;
-
-        if (isLDr12r2(W0)) {
-          Offset = getLDoffset(W0);
-          FoundLD = true;
-        } else if (isLDr12r2(W1)) {
-          Offset = getLDoffset(W1);
-          FoundLD = true;
-        }
-
-        if (FoundLD) {
-          uint64_t PLTSlot = (uint64_t)((int64_t)BC.PPC64TOCBase + Offset);
-          errs() << "BOLT-PPC64: PLT thunk " << SymName
-                 << ": toc=" << Twine::utohexstr(BC.PPC64TOCBase)
-                 << " + offset=" << Offset
-                 << " => plt_slot=" << Twine::utohexstr(PLTSlot) << "\n";
-          PPCBuilder.buildCallStubGOTSlot(&Ctx, PLTSlot, Seq);
-          for (auto &I : Seq)
-            BB->addInstruction(I);
-          PPCStubCache.emplace(StubName, StubBF);
-          return StubBF;
-        }
-
-        errs() << "BOLT-PPC64: PLT thunk " << SymName
-               << ": could not find ld r12,offset(r2) in first 8 bytes"
-               << " (W0=" << Twine::utohexstr(W0)
-               << " W1=" << Twine::utohexstr(W1) << ") -- falling back\n";
+      if (isLDr12r2(W0)) {
+        Offset = getLDoffset(W0);
+        FoundLD = true;
+      } else if (isLDr12r2(W1)) {
+        Offset = getLDoffset(W1);
+        FoundLD = true;
       }
+
+      if (FoundLD) {
+        uint64_t PLTSlot = (uint64_t)((int64_t)BC.PPC64TOCBase + Offset);
+        errs() << "BOLT-PPC64: PLT thunk " << SymName
+               << ": toc=" << Twine::utohexstr(BC.PPC64TOCBase)
+               << " + offset=" << Offset
+               << " => plt_slot=" << Twine::utohexstr(PLTSlot) << "\n";
+        PPCBuilder.buildCallStubGOTSlot(&Ctx, PLTSlot, Seq);
+        for (auto &I : Seq)
+          BB->addInstruction(I);
+        PPCStubCache.emplace(StubName, StubBF);
+        return StubBF;
+      }
+
+      errs() << "BOLT-PPC64: PLT thunk " << SymName
+             << ": could not find ld r12,offset(r2) in first 8 bytes"
+             << " (W0=" << Twine::utohexstr(W0)
+             << " W1=" << Twine::utohexstr(W1) << ") -- falling back\n";
     } else {
-      errs() << "BOLT-PPC64-STUB-LOOKUP: BinaryData NOT FOUND for '"
-             << LookupName << "'\n";
+      errs() << "BOLT-PPC64-STUB-LOOKUP: getSectionForAddress("
+             << Twine::utohexstr(ThunkAddress) << ") failed\n";
     }
   }
 
@@ -3512,7 +3475,8 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
 
     if (!AlreadyStub && shouldUsePPCAbsoluteCallStub(Rel, ReferencedSymbol)) {
       auto *StubBF =
-          getOrCreatePPCAbsoluteCallStub(*BC, *ReferencedSymbol, *BC->MIB);
+          getOrCreatePPCAbsoluteCallStub(*BC, *ReferencedSymbol, *BC->MIB,
+                                         SymbolAddress);
       ReferencedSymbol = StubBF->getSymbol(); // redirect to stub
       Addend = 0;
       ExtractedValue = 0;
