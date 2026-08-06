@@ -3236,8 +3236,16 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
                     SymName.contains(".plt_branch.");
 
   if (IsPLTThunk && BC.PPC64TOCBase != 0) {
-    // Find the BinaryFunction for the PLT thunk to get its raw bytes.
-    if (const BinaryData *BD = BC.getBinaryDataByName(SymName)) {
+    // MCContext appends a "/N" version suffix to symbol names to disambiguate
+    // multiple definitions (e.g. "0000d4fc.plt_call.getenv@@GLIBC_2.17/1").
+    // BinaryData stores the original name without this suffix, so strip it
+    // before looking up.
+    StringRef LookupName = SymName;
+    if (auto Slash = LookupName.rfind('/'); Slash != StringRef::npos)
+      LookupName = LookupName.take_front(Slash);
+
+    // Find the BinaryData for the PLT thunk to get its raw bytes.
+    if (const BinaryData *BD = BC.getBinaryDataByName(LookupName)) {
       uint64_t ThunkAddr = BD->getAddress();
       // The PPC64 ELFv2 PLT call stub layout is:
       //   [0] std  r2, 24(r1)         (optional, 4 bytes)
