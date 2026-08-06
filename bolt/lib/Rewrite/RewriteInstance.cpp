@@ -3260,8 +3260,11 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
     if (auto Slash = LookupName.rfind('/'); Slash != StringRef::npos)
       LookupName = LookupName.take_front(Slash);
 
+    errs() << "BOLT-PPC64-STUB-LOOKUP: trying BinaryData name='" << LookupName << "'\n";
+
     // Find the BinaryData for the PLT thunk to get its raw bytes.
     if (const BinaryData *BD = BC.getBinaryDataByName(LookupName)) {
+      errs() << "BOLT-PPC64-STUB-LOOKUP: found at addr=" << Twine::utohexstr(BD->getAddress()) << "\n";
       uint64_t ThunkAddr = BD->getAddress();
       // The PPC64 ELFv2 PLT call stub layout is:
       //   [0] std  r2, 24(r1)         (optional, 4 bytes)
@@ -3360,8 +3363,11 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
         errs() << "BOLT-PPC64: PLT thunk " << SymName
                << ": could not find ld r12,offset(r2) in first 8 bytes"
                << " (W0=" << Twine::utohexstr(W0)
-               << " W1=" << Twine::utohexstr(W1) << ") — falling back\n";
+               << " W1=" << Twine::utohexstr(W1) << ") -- falling back\n";
       }
+    } else {
+      errs() << "BOLT-PPC64-STUB-LOOKUP: BinaryData NOT FOUND for '"
+             << LookupName << "'\n";
     }
   }
 
