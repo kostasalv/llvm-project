@@ -3235,6 +3235,10 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
   bool IsPLTThunk = SymName.contains(".plt_call.") ||
                     SymName.contains(".plt_branch.");
 
+  errs() << "BOLT-PPC64-STUB-GUARD: IsPLTThunk=" << IsPLTThunk
+         << " TOCBase=" << Twine::utohexstr(BC.PPC64TOCBase)
+         << " sym=" << SymName << "\n";
+
   if (IsPLTThunk && BC.PPC64TOCBase != 0) {
     // MCContext appends a "/N" version suffix to symbol names to disambiguate
     // multiple definitions (e.g. "0000d4fc.plt_call.getenv@@GLIBC_2.17/1").
