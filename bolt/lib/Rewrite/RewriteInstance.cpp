@@ -3833,6 +3833,20 @@ void RewriteInstance::selectFunctionsToProcess() {
       continue;
     }
 
+    // PPC64 ELFv2: __glink_PLTresolve and __glink are PLT resolver stubs that
+    // live at the end of .text with a 16-byte PC-relative header immediately
+    // before them. BOLT must not emit these into the new text segment because
+    // the header would not be copied with them, corrupting the GOT lookup that
+    // __glink_PLTresolve performs at startup. Leave them at their original
+    // addresses in .bolt.org.text where the header is intact.
+    if (BC->isPPC64()) {
+      StringRef Name = Function.getOneName();
+      if (Name.contains("__glink_PLTresolve") || Name == "__glink") {
+        Function.setIgnored();
+        continue;
+      }
+    }
+
     // Decide what to do with fragments after parent functions are processed.
     if (Function.isFragment())
       continue;
