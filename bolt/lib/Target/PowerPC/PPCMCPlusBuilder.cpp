@@ -1040,6 +1040,89 @@ void PPCMCPlusBuilder::buildCallStubAbsolute(MCContext *Ctx,
   Out.push_back(I);
 }
 
+void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
+                                            uint64_t GotSlotAddress,
+                                            std::vector<MCInst> &Out) const {
+  Out.clear();
+  // Materialize GotSlotAddress into r11 (scratch; doesn't clobber r12 so the
+  // ELFv2 convention of r12 = entry address is preserved for the final bctr).
+  const unsigned R11 = PPC::X11;
+  const unsigned R12 = PPC::X12;
+
+  // Split the 64-bit address into four 16-bit pieces using the same
+  // highest/higher/h/l decomposition used by buildCallStubAbsolute.
+  // We use raw immediates here instead of MCSymbolRefExpr because the
+  // GOT slot address is a known constant at BOLT build time.
+  uint64_t Addr = GotSlotAddress;
+  uint16_t Highest = (Addr >> 48) & 0xffff;
+  uint16_t Higher  = (Addr >> 32) & 0xffff;
+  // @h / @l use the "adjusted" halves: if bit 15 of the low half is set, add 1
+  // to the high half so that the sign-extended low add produces the right result.
+  uint16_t Lo  = Addr & 0xffff;
+  uint16_t Hi  = ((Addr >> 16) & 0xffff) + ((Lo & 0x8000) ? 1 : 0);
+
+  MCInst I;
+
+  // lis r11, Highest
+  I = MCInst();
+  I.setOpcode(PPC::LIS8);
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createImm((int16_t)Highest));
+  Out.push_back(I);
+
+  // ori r11, r11, Higher
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createImm(Higher));
+  Out.push_back(I);
+
+  // rldicr r11, r11, 32, 31
+  I = MCInst();
+  I.setOpcode(PPC::RLDICR);
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createImm(32));
+  I.addOperand(MCOperand::createImm(31));
+  Out.push_back(I);
+
+  // oris r11, r11, Hi
+  I = MCInst();
+  I.setOpcode(PPC::ORIS8);
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createImm(Hi));
+  Out.push_back(I);
+
+  // ori r11, r11, Lo
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createReg(R11));
+  I.addOperand(MCOperand::createImm(Lo));
+  Out.push_back(I);
+
+  // ld r12, 0(r11)   ; load callee address from .plt GOT slot
+  I = MCInst();
+  I.setOpcode(PPC::LD);
+  I.addOperand(MCOperand::createReg(R12));
+  I.addOperand(MCOperand::createImm(0));
+  I.addOperand(MCOperand::createReg(R11));
+  Out.push_back(I);
+
+  // mtctr r12
+  I = MCInst();
+  I.setOpcode(PPC::MTCTR8);
+  I.addOperand(MCOperand::createReg(R12));
+  Out.push_back(I);
+
+  // bctr
+  I = MCInst();
+  I.setOpcode(PPC::BCTR8);
+  Out.push_back(I);
+}
+
 namespace llvm {
 namespace bolt {
 

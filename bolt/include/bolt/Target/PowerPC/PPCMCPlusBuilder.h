@@ -118,6 +118,23 @@ public:
   // r12, mtctr r12, bctr. No @toc* fixups are used.
   void buildCallStubAbsolute(MCContext *Ctx, const MCSymbol *TargetSym,
                              std::vector<MCInst> &Out) const;
+
+  // Build a TOC-independent PPC64 PLT call stub that loads the callee address
+  // directly from a known absolute GOT slot address (e.g. a .plt entry filled
+  // by the dynamic linker).  This avoids going through the original PLT thunk
+  // which uses a TOC-relative ld r12,offset(r2) and breaks when r2 has been
+  // overwritten with BOLT's new TOC.
+  //
+  //   lis   r11, GotSlot@highest
+  //   ori   r11, r11, GotSlot@higher
+  //   rldicr r11, r11, 32, 31
+  //   oris  r11, r11, GotSlot@h
+  //   ori   r11, r11, GotSlot@l
+  //   ld    r12, 0(r11)          ; load callee address from .plt GOT slot
+  //   mtctr r12
+  //   bctr
+  void buildCallStubGOTSlot(MCContext *Ctx, uint64_t GotSlotAddress,
+                            std::vector<MCInst> &Out) const;
 };
 
 } // namespace bolt
