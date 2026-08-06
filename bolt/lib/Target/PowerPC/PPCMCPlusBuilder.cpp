@@ -155,6 +155,9 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
 int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   switch (Inst.getOpcode()) {
   // Unconditional branch / call: 26-bit signed offset (±32MB)
+  // Must match every opcode that getPCRelOperandNum() returns >=0 for,
+  // otherwise needsStub() gets BitsAvail=-1 and flags every branch as
+  // out-of-range, causing infinite stub-insertion iterations.
   case PPC::B:
   case PPC::BL:
   case PPC::BL8:
@@ -167,6 +170,10 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::BL8_RM:
   case PPC::BL8_NOP_RM:
   case PPC::BL8_NOTOC_RM:
+  case PPC::BL8_LDinto_toc:
+  case PPC::BL8_LDinto_toc_RM:
+  case PPC::BDNZ:
+  case PPC::BDNZL:
     return 26;
   // Conditional branch: 16-bit signed offset (±32KB)
   case PPC::BC:
