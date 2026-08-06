@@ -808,12 +808,13 @@ Error RewriteInstance::run() {
   if (Error E = readSpecialSections())
     return E;
   adjustCommandLineOptions();
-  discoverFileObjects();
 
-  if (opts::Instrument && !BC->IsStaticExecutable) {
-    if (Error E = discoverRtInitAddress())
-      return E;
-  }
+  // PPC64 ELFv2: establish the TOC base before discoverFileObjects() calls
+  // processRelocations(), which calls getOrCreatePPCAbsoluteCallStub().
+  // That function needs BC->PPC64TOCBase to compute PLT GOT slot addresses
+  // from the "ld r12, offset(r2)" pattern in original PLT call thunks.
+  // The .got section is available after readSpecialSections(), so this is
+  // the earliest safe point to compute it.
   if (BC->isPPC64()) {
     if (auto GOrErr = BC->getUniqueSectionByName(".got")) {
       const BinarySection &G = *GOrErr;
@@ -827,6 +828,17 @@ Error RewriteInstance::run() {
       BC->errs()
           << "BOLT-WARNING: .got not found; PPC64 TOC base unavailable\n";
     }
+  }
+
+  discoverFileObjects();
+
+  if (opts::Instrument && !BC->IsStaticExecutable) {
+    if (Error E = discoverRtInitAddress())
+      return E;
+  }
+  if (BC->isPPC64()) {
+    // TOC base already initialized above; skip the duplicate block here.
+    (void)HavePPC64TOCBase; // suppress unused-variable warning if any
   }
 
   if (opts::Instrument && !BC->IsStaticExecutable) {
