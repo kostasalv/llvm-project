@@ -1049,19 +1049,24 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
   const unsigned R11 = PPC::X11;
   const unsigned R12 = PPC::X12;
 
-  // Split the 64-bit address into four 16-bit pieces using the same
-  // highest/higher/h/l decomposition used by buildCallStubAbsolute.
-  // We use raw immediates here instead of MCSymbolRefExpr because the
-  // GOT slot address is a known constant at BOLT build time.
+  // Split the 64-bit address into four 16-bit pieces.
   uint64_t Addr = GotSlotAddress;
   uint16_t Highest = (Addr >> 48) & 0xffff;
   uint16_t Higher  = (Addr >> 32) & 0xffff;
-  // @h / @l use the "adjusted" halves: if bit 15 of the low half is set, add 1
-  // to the high half so that the sign-extended low add produces the right result.
   uint16_t Lo  = Addr & 0xffff;
   uint16_t Hi  = ((Addr >> 16) & 0xffff) + ((Lo & 0x8000) ? 1 : 0);
 
   MCInst I;
+
+  // std r2, 24(r1)   ; save caller's TOC (r2) so ld r2,24(r1) after the call
+  //                  ; restores it correctly, even if the callee (e.g. getenv)
+  //                  ; makes further calls that clobber 24(r1).
+  I = MCInst();
+  I.setOpcode(PPC::STD);
+  I.addOperand(R(PPC::X2));
+  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
 
   // lis r11, Highest
   I = MCInst();
@@ -1117,9 +1122,22 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
   I.addOperand(MCOperand::createReg(R12));
   Out.push_back(I);
 
-  // bctr
+  // bctrl            ; call callee; LR = return address back into this stub
   I = MCInst();
-  I.setOpcode(PPC::BCTR8);
+  I.setOpcode(PPC::BCTRL8);
+  Out.push_back(I);
+
+  // ld r2, 24(r1)    ; restore caller's TOC after the call
+  I = MCInst();
+  I.setOpcode(PPC::LD);
+  I.addOperand(R(PPC::X2));
+  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // blr              ; return to original caller
+  I = MCInst();
+  I.setOpcode(PPC::BLR8);
   Out.push_back(I);
 }
 
