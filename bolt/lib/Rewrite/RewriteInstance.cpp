@@ -808,13 +808,12 @@ Error RewriteInstance::run() {
   if (Error E = readSpecialSections())
     return E;
   adjustCommandLineOptions();
+  discoverFileObjects();
 
-  // PPC64 ELFv2: establish the TOC base before discoverFileObjects() calls
-  // processRelocations(), which calls getOrCreatePPCAbsoluteCallStub().
-  // That function needs BC->PPC64TOCBase to compute PLT GOT slot addresses
-  // from the "ld r12, offset(r2)" pattern in original PLT call thunks.
-  // The .got section is available after readSpecialSections(), so this is
-  // the earliest safe point to compute it.
+  if (opts::Instrument && !BC->IsStaticExecutable) {
+    if (Error E = discoverRtInitAddress())
+      return E;
+  }
   if (BC->isPPC64()) {
     if (auto GOrErr = BC->getUniqueSectionByName(".got")) {
       const BinarySection &G = *GOrErr;
@@ -828,17 +827,6 @@ Error RewriteInstance::run() {
       BC->errs()
           << "BOLT-WARNING: .got not found; PPC64 TOC base unavailable\n";
     }
-  }
-
-  discoverFileObjects();
-
-  if (opts::Instrument && !BC->IsStaticExecutable) {
-    if (Error E = discoverRtInitAddress())
-      return E;
-  }
-  if (BC->isPPC64()) {
-    // TOC base already initialized above; skip the duplicate block here.
-    (void)HavePPC64TOCBase; // suppress unused-variable warning if any
   }
 
   if (opts::Instrument && !BC->IsStaticExecutable) {
@@ -3252,10 +3240,15 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
          << " TOCBase=" << Twine::utohexstr(BC.PPC64TOCBase)
          << " sym=" << SymName << "\n";
 
-  if (IsPLTThunk && BC.PPC64TOCBase != 0 && ThunkAddress != 0) {
+  if (IsPLTThunk && ThunkAddress != 0) {
+    // Compute the TOC base locally from .got — BC.PPC64TOCBase is set after
+    // discoverFileObjects() but we run during processRelocations() inside it.
+    uint64_t LocalTOCBase = 0;
+    if (auto GOrErr = BC.getUniqueSectionByName(".got"))
+      LocalTOCBase = GOrErr->getAddress() + 0x8000;
+
+    if (LocalTOCBase != 0) {
     // Use the thunk address passed by the caller to read its raw bytes.
-    // getBinaryDataByName() won't find local symbols, so we go directly
-    // to the section contents via getSectionForAddress().
     errs() << "BOLT-PPC64-STUB-LOOKUP: using ThunkAddress="
            << Twine::utohexstr(ThunkAddress) << "\n";
 
@@ -3280,8 +3273,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       //  [12] bctr
       // OR starts directly with ld r12, offset(r2).
       // Scan first two words for "ld r12, offset(r2)".
-      // PPC64LE: instruction word stored little-endian; readLE32 gives
-      // bits[31:26]=opcode, [25:21]=RT, [20:16]=RA, [15:0]=DS-displacement.
       auto isLDr12r2 = [](uint32_t Word) -> bool {
         uint32_t Op = (Word >> 26) & 0x3F;
         uint32_t RT = (Word >> 21) & 0x1F;
@@ -3291,7 +3282,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       };
 
       auto getLDoffset = [](uint32_t Word) -> int64_t {
-        // bits[15:0] of DS-form LD = signed 16-bit byte offset (bottom 2 bits 0)
         return (int64_t)(int16_t)(Word & 0xFFFF);
       };
 
@@ -3312,9 +3302,9 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       }
 
       if (FoundLD) {
-        uint64_t PLTSlot = (uint64_t)((int64_t)BC.PPC64TOCBase + Offset);
+        uint64_t PLTSlot = (uint64_t)((int64_t)LocalTOCBase + Offset);
         errs() << "BOLT-PPC64: PLT thunk " << SymName
-               << ": toc=" << Twine::utohexstr(BC.PPC64TOCBase)
+               << ": toc=" << Twine::utohexstr(LocalTOCBase)
                << " + offset=" << Offset
                << " => plt_slot=" << Twine::utohexstr(PLTSlot) << "\n";
         PPCBuilder.buildCallStubGOTSlot(&Ctx, PLTSlot, Seq);
@@ -3332,6 +3322,7 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       errs() << "BOLT-PPC64-STUB-LOOKUP: getSectionForAddress("
              << Twine::utohexstr(ThunkAddress) << ") failed\n";
     }
+    } // if (LocalTOCBase != 0)
   }
 
   PPCBuilder.buildCallStubAbsolute(&Ctx, &TargetSym, Seq);
@@ -3717,7 +3708,7 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
       // creation of sections and whose symbol address is not really what should
       // be encoded in the instruction). So we essentially disabled this check
       // for AArch64 and live with bogus names for objects.
-      assert((IsAArch64 || BC->isRISCV() || IsPPC64 || IsSectionRelocation ||
+      assert((IsAArch64 || BC->isRISCV() || IsSectionRelocation ||
               BD->nameStartsWith(SymbolName) ||
               BD->nameStartsWith("PG" + SymbolName) ||
               (BD->nameStartsWith("ANONYMOUS") &&
