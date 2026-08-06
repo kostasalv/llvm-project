@@ -3717,7 +3717,7 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
       // creation of sections and whose symbol address is not really what should
       // be encoded in the instruction). So we essentially disabled this check
       // for AArch64 and live with bogus names for objects.
-      assert((IsAArch64 || BC->isRISCV() || IsSectionRelocation ||
+      assert((IsAArch64 || BC->isRISCV() || IsPPC64 || IsSectionRelocation ||
               BD->nameStartsWith(SymbolName) ||
               BD->nameStartsWith("PG" + SymbolName) ||
               (BD->nameStartsWith("ANONYMOUS") &&
