@@ -3207,7 +3207,11 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
   if (It != PPCStubCache.end())
     return It->second;
 
-  // Create an injected fuction for the stub.
+  // Diagnostic: log every new stub creation so we can see what names arrive.
+  StringRef SymName = TargetSym.getName();
+  errs() << "BOLT-PPC64-STUB-CREATE: " << SymName << "\n";
+
+  // Create an injected function for the stub.
   auto *StubBF = BC.createInjectedBinaryFunction(StubName, /*IsSimple=*/true);
 
   // Build one basic block
@@ -3228,7 +3232,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
   // Instead, read the "ld r12, offset(r2)" instruction from the thunk's bytes,
   // compute the absolute PLT GOT slot address (original_toc + offset), and
   // emit a stub that loads from it directly — fully TOC-independent.
-  StringRef SymName = TargetSym.getName();
   bool IsPLTThunk = SymName.contains(".plt_call.") ||
                     SymName.contains(".plt_branch.");
 
@@ -3469,6 +3472,13 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
 
     const StringRef SymName = ReferencedSymbol->getName();
     const bool AlreadyStub = SymName.starts_with("__bolt_ppc_abs_call_stub.");
+
+    // Diagnostic: log every PLT-thunk-targeted relocation so we can see
+    // what name reaches getOrCreatePPCAbsoluteCallStub.
+    if (!AlreadyStub && (SymName.contains(".plt_call.") ||
+                         SymName.contains(".plt_branch.")))
+      errs() << "BOLT-PPC64-REL24: PLT reloc sym=" << SymName
+             << " addr=" << Twine::utohexstr(SymbolAddress) << "\n";
 
     if (!AlreadyStub && shouldUsePPCAbsoluteCallStub(Rel, ReferencedSymbol)) {
       auto *StubBF =
