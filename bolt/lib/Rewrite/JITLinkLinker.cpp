@@ -121,6 +121,9 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
   JITLinkLinker::SectionsMapper MapSections;
   // Set in modifyPassConfig; used in lookup() for PPC64-specific diagnostics.
   bool IsPPC64 = false;
+  // Set in modifyPassConfig via a PostAllocationPass; used in lookup() to
+  // resolve BOLT stub symbols directly from the graph (before notifyResolved).
+  jitlink::LinkGraph *Graph = nullptr;
 
   Context(JITLinkLinker &Linker, JITLinkLinker::SectionsMapper MapSections)
       : JITLinkContext(&Linker.Dylib), Linker(Linker),
@@ -148,6 +151,9 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       MapSections([&G](const BinarySection &Section, uint64_t Address) {
         reassignSectionAddress(G, Section, Address);
       });
+      // Store the graph pointer so lookup() can resolve BOLT stub symbols
+      // directly from the graph (before notifyResolved populates Symtab).
+      this->Graph = &G;
       return Error::success();
     });
 
@@ -263,6 +269,31 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
          std::unique_ptr<jitlink::JITLinkAsyncLookupContinuation> LC) override {
     jitlink::AsyncLookupResult AllResults;
 
+    // PPC64 ELFv2 helper: given a real symbol name (e.g. "getenv@@GLIBC_2.17"),
+    // check if BC has a BOLT safe stub for it, and if so return its address.
+    // We look up the stub name in the current LinkGraph (populated during
+    // PostAllocationPass, before lookup() runs) to get the finalized address.
+    // Falls back to Symtab for stubs from previously-linked objects.
+    auto getPPC64StubAddr = [&](StringRef RealName) -> std::optional<uint64_t> {
+      if (!IsPPC64)
+        return std::nullopt;
+      auto It = Linker.BC.PPC64RealNameToStubName.find(RealName);
+      if (It == Linker.BC.PPC64RealNameToStubName.end())
+        return std::nullopt;
+      StringRef StubName = It->second;
+      // Try Graph first (same-object stubs, addresses assigned at PostAlloc).
+      if (Graph) {
+        for (auto *Sym : Graph->defined_symbols()) {
+          if (Sym->hasName() && *Sym->getName() == StubName)
+            return Sym->getAddress().getValue();
+        }
+      }
+      // Fallback: Symtab (stubs from previously-linked objects).
+      if (auto SI = Linker.lookupSymbolInfo(StubName))
+        return SI->Address;
+      return std::nullopt;
+    };
+
     for (const auto &Symbol : Symbols) {
       std::string SymName = (*Symbol.first).str();
       LLVM_DEBUG(dbgs() << "BOLT: looking for " << SymName << "\n");
@@ -304,16 +335,15 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
             // getBinaryDataByName misses because it only covers global symbols).
             if (auto SymInfo = Linker.lookupSymbolInfo(RealNameStr)) {
               uint64_t Addr = SymInfo->Address;
-              // If this resolved to a PLT thunk that has a safe BOLT stub,
-              // redirect to the stub instead.
-              auto ThunkIt = Linker.PLTThunkToStub.find(Addr);
-              if (ThunkIt != Linker.PLTThunkToStub.end()) {
+              // If there's a safe BOLT stub for this real name, use it.
+              if (auto StubAddr = getPPC64StubAddr(RealName)) {
                 errs() << "BOLT-PPC64: " << SymName
-                       << " -> PLT thunk 0x" << Twine::utohexstr(Addr)
+                       << " -> (plt-redirect) PLT thunk 0x"
+                       << Twine::utohexstr(Addr)
                        << " redirected to BOLT stub 0x"
-                       << Twine::utohexstr(ThunkIt->second) << "\n";
+                       << Twine::utohexstr(*StubAddr) << "\n";
                 AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                    orc::ExecutorAddr(ThunkIt->second), JITSymbolFlags());
+                    orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
               } else {
                 LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
                                   << " -> (plt-redirect) symtab 0x"
@@ -343,14 +373,15 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
                                  << BareNameStr << "\n");
               if (auto SymInfo = Linker.lookupSymbolInfo(BareNameStr)) {
                 uint64_t Addr = SymInfo->Address;
-                auto ThunkIt = Linker.PLTThunkToStub.find(Addr);
-                if (ThunkIt != Linker.PLTThunkToStub.end()) {
+                StringRef BareName(BareNameStr);
+                if (auto StubAddr = getPPC64StubAddr(BareName)) {
                   errs() << "BOLT-PPC64: " << SymName
-                         << " -> PLT thunk 0x" << Twine::utohexstr(Addr)
+                         << " -> (plt-redirect-bare) PLT thunk 0x"
+                         << Twine::utohexstr(Addr)
                          << " redirected to BOLT stub 0x"
-                         << Twine::utohexstr(ThunkIt->second) << "\n";
+                         << Twine::utohexstr(*StubAddr) << "\n";
                   AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                      orc::ExecutorAddr(ThunkIt->second), JITSymbolFlags());
+                      orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
                 } else {
                   LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
                                     << " -> (plt-redirect-bare) symtab 0x"
@@ -386,24 +417,19 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
         LLVM_DEBUG(dbgs() << "Resolved to address 0x"
                           << Twine::utohexstr(SymInfo->Address) << "\n");
         if (IsPPC64) {
-          // Check if the resolved address is a PLT thunk that has a safe BOLT
-          // stub.  If so, redirect to the stub.  This handles the case where a
-          // bare external symbol name (e.g. "getenv@@GLIBC_2.17") was
-          // registered in Symtab pointing at the original binary's PLT thunk
-          // by notifyResolved(), and is now being requested by a JITLink
-          // $__STUBS PIC stub to populate its $__GOT slot.  Without this
-          // redirect, the $__GOT slot gets the PLT thunk address, which uses
-          // "ld r12,N(r2)" with the original TOC base — crashing when called
-          // from BOLT-rewritten functions that set r2 = new BOLT TOC.
-          auto ThunkIt = Linker.PLTThunkToStub.find(SymInfo->Address);
-          if (ThunkIt != Linker.PLTThunkToStub.end()) {
-            uint64_t StubAddr = ThunkIt->second;
+          // Check if there's a safe BOLT stub for this symbol name.
+          // This handles bare external symbol names (e.g. "getenv@@GLIBC_2.17")
+          // requested by JITLink $__STUBS PIC stubs to populate $__GOT slots.
+          // Without this redirect, the $__GOT slot gets the PLT thunk address,
+          // which uses "ld r12,N(r2)" with the original TOC base — crashing when
+          // called from BOLT-rewritten functions that set r2 = new BOLT TOC.
+          if (auto StubAddr = getPPC64StubAddr(SymName)) {
             errs() << "BOLT-PPC64: " << SymName << " -> PLT thunk 0x"
                    << Twine::utohexstr(SymInfo->Address)
                    << " redirected to BOLT stub 0x"
-                   << Twine::utohexstr(StubAddr) << "\n";
+                   << Twine::utohexstr(*StubAddr) << "\n";
             AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                orc::ExecutorAddr(StubAddr), JITSymbolFlags());
+                orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
             continue;
           }
           LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
@@ -503,49 +529,10 @@ JITLinkLinker::JITLinkLinker(BinaryContext &BC,
                              std::unique_ptr<ExecutableFileMemoryManager> MM)
     : BC(BC), MM(std::move(MM)) {}
 
-void JITLinkLinker::buildPLTThunkToStubMap() {
-  if (!BC.TheTriple->isPPC64())
-    return;
-  // Scan all BinaryFunctions for __bolt_ppc_abs_call_stub.* injected stubs.
-  // For each stub named "__bolt_ppc_abs_call_stub.XXXX.plt_call.NAME" (or
-  // plt_branch), find the corresponding original PLT thunk by looking up
-  // "XXXX.plt_call.NAME" in BinaryData, and record PLTThunkAddr → StubAddr.
-  // This is called before the first lookup() so that PLTThunkToStub is ready
-  // when JITLink asks for symbol addresses to populate $__GOT slots.
-  const StringRef Prefix = "__bolt_ppc_abs_call_stub.";
-  for (auto &[Addr, BF] : BC.getBinaryFunctions()) {
-    StringRef Name = BF.getOneName();
-    if (!Name.starts_with(Prefix))
-      continue;
-    StringRef ThunkName = Name.drop_front(Prefix.size());
-    uint64_t StubAddr = BF.getOutputAddress();
-    if (StubAddr == 0)
-      continue;
-    // Look up the thunk by name in BinaryData.
-    if (const BinaryData *ThunkBD = BC.getBinaryDataByName(ThunkName)) {
-      uint64_t ThunkAddr = ThunkBD->getAddress();
-      PLTThunkToStub.insert({ThunkAddr, StubAddr});
-      LLVM_DEBUG(dbgs() << "BOLT-PPC64: PLTThunkToStub (pre-link) [0x"
-                        << Twine::utohexstr(ThunkAddr) << "] = 0x"
-                        << Twine::utohexstr(StubAddr)
-                        << " stub=" << Name << "\n");
-    }
-  }
-  errs() << "BOLT-PPC64: PLTThunkToStub pre-populated with "
-         << PLTThunkToStub.size() << " entries\n";
-}
-
 JITLinkLinker::~JITLinkLinker() { cantFail(MM->deallocate(std::move(Allocs))); }
 
 void JITLinkLinker::loadObject(MemoryBufferRef Obj,
                                SectionsMapper MapSections) {
-  // On first object load for PPC64, pre-populate PLTThunkToStub from BC so
-  // that lookup() can redirect bare symbol names to BOLT stubs immediately,
-  // before notifyResolved() has a chance to register them.
-  if (!PLTThunkToStubBuilt) {
-    PLTThunkToStubBuilt = true;
-    buildPLTThunkToStubMap();
-  }
   auto LG = jitlink::createLinkGraphFromObject(Obj, BC.getSymbolStringPool());
   if (auto E = LG.takeError()) {
     errs() << "BOLT-ERROR: JITLink failed: " << E << '\n';

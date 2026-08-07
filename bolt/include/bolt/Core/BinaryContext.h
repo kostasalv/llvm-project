@@ -511,6 +511,13 @@ public:
   /// to the same BinaryFunction.
   DenseMap<const MCSymbol *, BinaryFunction *> SymbolToFunctionMap;
 
+  /// PPC64 ELFv2: maps a PLT real symbol name (e.g. "getenv@@GLIBC_2.17") to
+  /// the name of its BOLT safe call stub
+  /// ("__bolt_ppc_abs_call_stub.0000d4fc.plt_call.getenv@@GLIBC_2.17").
+  /// Populated by getOrCreatePPCAbsoluteCallStub() in RewriteInstance.
+  /// Queried by JITLinkLinker::lookup() to redirect $__GOT slot population.
+  StringMap<std::string> PPC64RealNameToStubName;
+
   /// A mutex that is used to control parallel accesses to SymbolToFunctionMap
   mutable llvm::sys::RWMutex SymbolToFunctionMapMutex;
 

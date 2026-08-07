@@ -3311,6 +3311,14 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
         for (auto &I : Seq)
           BB->addInstruction(I);
         PPCStubCache.emplace(StubName, StubBF);
+        // Register real-name → stub-name mapping for JITLinkLinker::lookup().
+        for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
+          if (auto Pos = SymName.find(Marker); Pos != StringRef::npos) {
+            StringRef RealName = SymName.drop_front(Pos + Marker.size());
+            BC.PPC64RealNameToStubName.insert({RealName, StubName});
+            break;
+          }
+        }
         return StubBF;
       }
 
@@ -3332,6 +3340,14 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
     BB->addInstruction(I);
 
   PPCStubCache.emplace(StubName, StubBF);
+  // Register real-name → stub-name mapping for JITLinkLinker::lookup().
+  for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
+    if (auto Pos = SymName.find(Marker); Pos != StringRef::npos) {
+      StringRef RealName = SymName.drop_front(Pos + Marker.size());
+      BC.PPC64RealNameToStubName.insert({RealName, StubName});
+      break;
+    }
+  }
   return StubBF;
 }
 
