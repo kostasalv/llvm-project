@@ -302,11 +302,25 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
             // Try to resolve the real symbol name (includes local symbols that
             // getBinaryDataByName misses because it only covers global symbols).
             if (auto SymInfo = Linker.lookupSymbolInfo(RealNameStr)) {
-              errs() << "BOLT-PPC64-LOOKUP: " << SymName
-                     << " -> (plt-redirect) symtab 0x"
-                     << Twine::utohexstr(SymInfo->Address) << "\n";
-              AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                  orc::ExecutorAddr(SymInfo->Address), JITSymbolFlags());
+              uint64_t Addr = SymInfo->Address;
+              // If this resolved to a PLT thunk that has a safe BOLT stub,
+              // redirect to the stub instead.
+              auto ThunkIt = Linker.PLTThunkToStub.find(Addr);
+              if (ThunkIt != Linker.PLTThunkToStub.end()) {
+                errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                       << " -> (plt-redirect) symtab 0x"
+                       << Twine::utohexstr(Addr)
+                       << " (PLT thunk, redirecting to BOLT stub 0x"
+                       << Twine::utohexstr(ThunkIt->second) << ")\n";
+                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                    orc::ExecutorAddr(ThunkIt->second), JITSymbolFlags());
+              } else {
+                errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                       << " -> (plt-redirect) symtab 0x"
+                       << Twine::utohexstr(Addr) << "\n";
+                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                    orc::ExecutorAddr(Addr), JITSymbolFlags());
+              }
               goto next_symbol;
             }
             if (const BinaryData *I =
@@ -328,11 +342,23 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
               LLVM_DEBUG(dbgs() << "BOLT PPC64: trying bare name "
                                  << BareNameStr << "\n");
               if (auto SymInfo = Linker.lookupSymbolInfo(BareNameStr)) {
-                errs() << "BOLT-PPC64-LOOKUP: " << SymName
-                       << " -> (plt-redirect-bare) symtab 0x"
-                       << Twine::utohexstr(SymInfo->Address) << "\n";
-                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                    orc::ExecutorAddr(SymInfo->Address), JITSymbolFlags());
+                uint64_t Addr = SymInfo->Address;
+                auto ThunkIt = Linker.PLTThunkToStub.find(Addr);
+                if (ThunkIt != Linker.PLTThunkToStub.end()) {
+                  errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                         << " -> (plt-redirect-bare) symtab 0x"
+                         << Twine::utohexstr(Addr)
+                         << " (PLT thunk, redirecting to BOLT stub 0x"
+                         << Twine::utohexstr(ThunkIt->second) << ")\n";
+                  AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                      orc::ExecutorAddr(ThunkIt->second), JITSymbolFlags());
+                } else {
+                  errs() << "BOLT-PPC64-LOOKUP: " << SymName
+                         << " -> (plt-redirect-bare) symtab 0x"
+                         << Twine::utohexstr(Addr) << "\n";
+                  AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                      orc::ExecutorAddr(Addr), JITSymbolFlags());
+                }
                 goto next_symbol;
               }
               if (const BinaryData *I =
@@ -369,9 +395,30 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
         // PPC64 debug: unconditionally log every symbol resolution so we can
         // identify what gets resolved to __glink_PLTresolve or other
         // unexpected addresses without needing -debug-only=bolt.
-        if (IsPPC64)
+        if (IsPPC64) {
+          // Check if the resolved address is a PLT thunk that has a safe BOLT
+          // stub.  If so, redirect to the stub.  This handles the case where a
+          // bare external symbol name (e.g. "getenv@@GLIBC_2.17") was
+          // registered in Symtab pointing at the original binary's PLT thunk
+          // by notifyResolved(), and is now being requested by a JITLink
+          // $__STUBS PIC stub to populate its $__GOT slot.  Without this
+          // redirect, the $__GOT slot gets the PLT thunk address, which uses
+          // "ld r12,N(r2)" with the original TOC base — crashing when called
+          // from BOLT-rewritten functions that set r2 = new BOLT TOC.
+          auto ThunkIt = Linker.PLTThunkToStub.find(SymInfo->Address);
+          if (ThunkIt != Linker.PLTThunkToStub.end()) {
+            uint64_t StubAddr = ThunkIt->second;
+            errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> symtab 0x"
+                   << Twine::utohexstr(SymInfo->Address)
+                   << " (PLT thunk, redirecting to BOLT stub 0x"
+                   << Twine::utohexstr(StubAddr) << ")\n";
+            AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                orc::ExecutorAddr(StubAddr), JITSymbolFlags());
+            continue;
+          }
           errs() << "BOLT-PPC64-LOOKUP: " << SymName << " -> symtab 0x"
                  << Twine::utohexstr(SymInfo->Address) << "\n";
+        }
         AllResults[Symbol.first] = orc::ExecutorSymbolDef(
             orc::ExecutorAddr(SymInfo->Address), JITSymbolFlags());
         continue;
@@ -422,7 +469,32 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       SymbolInfo Info{Symbol->getAddress().getValue(), Symbol->getSize()};
       auto Name =
           Symbol->hasName() ? (*Symbol->getName()).str() : std::string();
-      Linker.Symtab.insert({std::move(Name), Info});
+      Linker.Symtab.insert({Name, Info});
+
+      // PPC64 ELFv2: build PLTThunkToStub reverse map.
+      // BOLT names its safe call stubs:
+      //   __bolt_ppc_abs_call_stub.XXXX.plt_call.REALNAME
+      //   __bolt_ppc_abs_call_stub.XXXX.plt_branch.REALNAME
+      // For each such stub, find the original PLT thunk entry in Symtab
+      // (keyed by "XXXX.plt_call.REALNAME" or "XXXX.plt_branch.REALNAME")
+      // and record: PLTThunkAddr → StubAddr.
+      if (IsPPC64) {
+        StringRef SN(Name);
+        const StringRef Prefix = "__bolt_ppc_abs_call_stub.";
+        if (SN.starts_with(Prefix)) {
+          // ThunkName = "XXXX.plt_call.REALNAME" (after the prefix)
+          StringRef ThunkName = SN.drop_front(Prefix.size());
+          uint64_t StubAddr = Info.Address;
+          if (auto ThunkInfo = Linker.lookupSymbolInfo(ThunkName)) {
+            uint64_t ThunkAddr = ThunkInfo->Address;
+            Linker.PLTThunkToStub.insert({ThunkAddr, StubAddr});
+            errs() << "BOLT-PPC64: PLTThunkToStub[0x"
+                   << Twine::utohexstr(ThunkAddr) << "] = 0x"
+                   << Twine::utohexstr(StubAddr) << " (stub=" << Name
+                   << ", thunk=" << ThunkName << ")\n";
+          }
+        }
+      }
     }
 
     return Error::success();

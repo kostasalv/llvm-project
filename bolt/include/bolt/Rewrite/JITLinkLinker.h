@@ -15,6 +15,7 @@
 
 #include "bolt/Core/Linker.h"
 #include "bolt/Rewrite/ExecutableFileMemoryManager.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ExecutionEngine/JITLink/JITLinkDylib.h"
 
 #include <memory>
@@ -35,6 +36,11 @@ private:
   jitlink::JITLinkDylib Dylib{"main"};
   std::vector<ExecutableFileMemoryManager::FinalizedAlloc> Allocs;
   StringMap<SymbolInfo> Symtab;
+  /// PPC64 ELFv2: maps PLT thunk address → BOLT safe-stub address.
+  /// Populated by notifyResolved() when it sees __bolt_ppc_abs_call_stub.*
+  /// symbols.  Used in lookup() to redirect bare symbol resolutions that
+  /// accidentally land on a PLT thunk.
+  DenseMap<uint64_t, uint64_t> PLTThunkToStub;
 
 public:
   JITLinkLinker(BinaryContext &BC,
