@@ -502,10 +502,49 @@ JITLinkLinker::JITLinkLinker(BinaryContext &BC,
                              std::unique_ptr<ExecutableFileMemoryManager> MM)
     : BC(BC), MM(std::move(MM)) {}
 
+void JITLinkLinker::buildPLTThunkToStubMap() {
+  if (!BC.TheTriple->isPPC64())
+    return;
+  // Scan all BinaryFunctions for __bolt_ppc_abs_call_stub.* injected stubs.
+  // For each stub named "__bolt_ppc_abs_call_stub.XXXX.plt_call.NAME" (or
+  // plt_branch), find the corresponding original PLT thunk by looking up
+  // "XXXX.plt_call.NAME" in BinaryData, and record PLTThunkAddr → StubAddr.
+  // This is called before the first lookup() so that PLTThunkToStub is ready
+  // when JITLink asks for symbol addresses to populate $__GOT slots.
+  const StringRef Prefix = "__bolt_ppc_abs_call_stub.";
+  for (auto &[Addr, BF] : BC.getBinaryFunctions()) {
+    StringRef Name = BF.getOneName();
+    if (!Name.starts_with(Prefix))
+      continue;
+    StringRef ThunkName = Name.drop_front(Prefix.size());
+    uint64_t StubAddr = BF.getOutputAddress();
+    if (StubAddr == 0)
+      continue;
+    // Look up the thunk by name in BinaryData.
+    if (const BinaryData *ThunkBD = BC.getBinaryDataByName(ThunkName)) {
+      uint64_t ThunkAddr = ThunkBD->getAddress();
+      PLTThunkToStub.insert({ThunkAddr, StubAddr});
+      LLVM_DEBUG(dbgs() << "BOLT-PPC64: PLTThunkToStub (pre-link) [0x"
+                        << Twine::utohexstr(ThunkAddr) << "] = 0x"
+                        << Twine::utohexstr(StubAddr)
+                        << " stub=" << Name << "\n");
+    }
+  }
+  errs() << "BOLT-PPC64: PLTThunkToStub pre-populated with "
+         << PLTThunkToStub.size() << " entries\n";
+}
+
 JITLinkLinker::~JITLinkLinker() { cantFail(MM->deallocate(std::move(Allocs))); }
 
 void JITLinkLinker::loadObject(MemoryBufferRef Obj,
                                SectionsMapper MapSections) {
+  // On first object load for PPC64, pre-populate PLTThunkToStub from BC so
+  // that lookup() can redirect bare symbol names to BOLT stubs immediately,
+  // before notifyResolved() has a chance to register them.
+  if (!PLTThunkToStubBuilt) {
+    PLTThunkToStubBuilt = true;
+    buildPLTThunkToStubMap();
+  }
   auto LG = jitlink::createLinkGraphFromObject(Obj, BC.getSymbolStringPool());
   if (auto E = LG.takeError()) {
     errs() << "BOLT-ERROR: JITLink failed: " << E << '\n';
