@@ -579,17 +579,16 @@ bool PPCMCPlusBuilder::isNoop(const MCInst &Inst) const {
                     << " PPC::NOP=" << PPC::NOP
                     << " PPC::ORI=" << PPC::ORI << "\n");
   if (Inst.getOpcode() == PPC::NOP) {
-    dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
-           << " == PPC::NOP(" << PPC::NOP << ") -> TRUE\n";
+    LLVM_DEBUG(dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
+                      << " == PPC::NOP(" << PPC::NOP << ") -> TRUE\n");
     return true;
   }
   bool oriMatch = Inst.getOpcode() == PPC::ORI && Inst.getOperand(0).isReg() &&
          Inst.getOperand(0).getReg() == PPC::R0 && Inst.getOperand(1).isReg() &&
          Inst.getOperand(1).getReg() == PPC::R0 && Inst.getOperand(2).isImm() &&
          Inst.getOperand(2).getImm() == 0;
-  if (oriMatch)
-    dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
-           << " == ORI r0,r0,0 -> TRUE\n";
+  LLVM_DEBUG(if (oriMatch) dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
+                                  << " == ORI r0,r0,0 -> TRUE\n");
   return oriMatch;
 }
 
