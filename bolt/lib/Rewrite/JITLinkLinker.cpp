@@ -9,6 +9,7 @@
 #include "bolt/Rewrite/JITLinkLinker.h"
 #include "bolt/Core/BinaryContext.h"
 #include "bolt/Core/BinaryData.h"
+#include "bolt/Core/BinaryFunction.h"
 #include "bolt/Core/BinarySection.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ExecutionEngine/JITLink/ELF_riscv.h"
