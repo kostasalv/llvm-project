@@ -1211,11 +1211,20 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   I.addOperand(MCOperand::createReg(PPC::X0));
   Out.push_back(I);
 
-  // stdu r1, -48(r1) ; allocate 48-byte frame, save back-chain
-  I = MCInst(); I.setOpcode(PPC::STDU);
+  // Allocate a 48-byte frame: std r1, -48(r1) + addi r1, r1, -48
+  // (Use STD+ADDI8 instead of STDU to avoid STDU's complex memrix operand.)
+  // std r1, -48(r1)  ; save back-chain
+  I = MCInst(); I.setOpcode(PPC::STD);
   I.addOperand(R(PPC::X1));
   I.addOperand(MCOperand::createImm(-48));
   I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // addi r1, r1, -48 ; update stack pointer
+  I = MCInst(); I.setOpcode(PPC::ADDI8);
+  I.addOperand(R(PPC::X1));
+  I.addOperand(R(PPC::X1));
+  I.addOperand(MCOperand::createImm(-48));
   Out.push_back(I);
 
   // std r0, 64(r1)   ; save lr at old_r1+16 = new_r1+48+16 = new_r1+64
