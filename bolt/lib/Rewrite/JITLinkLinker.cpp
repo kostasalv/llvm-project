@@ -500,6 +500,18 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
   }
 
   Error notifyResolved(jitlink::LinkGraph &G) override {
+    // Diagnostic: dump all external symbols and their addresses at resolve time.
+    if (IsPPC64) {
+      for (auto *Sym : G.external_symbols()) {
+        if (!Sym->hasName()) continue;
+        StringRef N = *Sym->getName();
+        if (N.contains("getenv") || N.contains("plt_call") || N.contains("exit")) {
+          errs() << "BOLT-PPC64-EXTRESOLVE: " << N
+                 << " addr=0x" << Twine::utohexstr(Sym->getAddress().getValue())
+                 << "\n";
+        }
+      }
+    }
     for (auto *Symbol : G.defined_symbols()) {
       SymbolInfo Info{Symbol->getAddress().getValue(), Symbol->getSize()};
       auto Name =
