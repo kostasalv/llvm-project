@@ -488,30 +488,6 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
           Symbol->hasName() ? (*Symbol->getName()).str() : std::string();
       Linker.Symtab.insert({Name, Info});
 
-      // PPC64 ELFv2: build PLTThunkToStub reverse map.
-      // BOLT names its safe call stubs:
-      //   __bolt_ppc_abs_call_stub.XXXX.plt_call.REALNAME
-      //   __bolt_ppc_abs_call_stub.XXXX.plt_branch.REALNAME
-      // For each such stub, find the original PLT thunk entry in Symtab
-      // (keyed by "XXXX.plt_call.REALNAME" or "XXXX.plt_branch.REALNAME")
-      // and record: PLTThunkAddr → StubAddr.
-      if (IsPPC64) {
-        StringRef SN(Name);
-        const StringRef Prefix = "__bolt_ppc_abs_call_stub.";
-        if (SN.starts_with(Prefix)) {
-          // ThunkName = "XXXX.plt_call.REALNAME" (after the prefix)
-          StringRef ThunkName = SN.drop_front(Prefix.size());
-          uint64_t StubAddr = Info.Address;
-          if (auto ThunkInfo = Linker.lookupSymbolInfo(ThunkName)) {
-            uint64_t ThunkAddr = ThunkInfo->Address;
-            Linker.PLTThunkToStub.insert({ThunkAddr, StubAddr});
-            LLVM_DEBUG(dbgs() << "BOLT-PPC64: PLTThunkToStub[0x"
-                              << Twine::utohexstr(ThunkAddr) << "] = 0x"
-                              << Twine::utohexstr(StubAddr) << " (stub=" << Name
-                              << ", thunk=" << ThunkName << ")\n");
-          }
-        }
-      }
     }
 
     return Error::success();
