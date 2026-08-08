@@ -3302,12 +3302,12 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       }
 
       if (FoundLD) {
-        uint64_t PLTSlot = (uint64_t)((int64_t)LocalTOCBase + Offset);
         errs() << "BOLT-PPC64: PLT thunk " << SymName
                << ": toc=" << Twine::utohexstr(LocalTOCBase)
                << " + offset=" << Offset
-               << " => plt_slot=" << Twine::utohexstr(PLTSlot) << "\n";
-        PPCBuilder.buildCallStubGOTSlot(&Ctx, PLTSlot, Seq);
+               << " => using TOCThunk stub, thunk=0x"
+               << Twine::utohexstr(ThunkAddress) << "\n";
+        PPCBuilder.buildCallStubTOCThunk(&Ctx, ThunkAddress, LocalTOCBase, Seq);
         for (auto &I : Seq)
           BB->addInstruction(I);
         PPCStubCache.emplace(StubName, StubBF);

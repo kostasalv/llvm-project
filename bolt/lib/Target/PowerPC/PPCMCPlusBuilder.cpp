@@ -1140,7 +1140,85 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
   Out.push_back(I);
 }
 
-namespace llvm {
+void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
+                                              uint64_t ThunkAddress,
+                                              uint64_t OrigTOCBase,
+                                              std::vector<MCInst> &Out) const {
+  Out.clear();
+  // Helper lambda: materialize a 64-bit immediate into a GPR using the
+  // lis/ori/rldicr/oris/ori sequence (same as buildCallStubGOTSlot).
+  auto mat64 = [&](unsigned Reg, uint64_t Val) {
+    uint16_t Highest = (Val >> 48) & 0xffff;
+    uint16_t Higher  = (Val >> 32) & 0xffff;
+    uint16_t Lo  = Val & 0xffff;
+    uint16_t Hi  = ((Val >> 16) & 0xffff) + ((Lo & 0x8000) ? 1 : 0);
+    MCInst I;
+    // lis Reg, Highest
+    I = MCInst(); I.setOpcode(PPC::LIS8);
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createImm((int16_t)Highest));
+    Out.push_back(I);
+    // ori Reg, Reg, Higher
+    I = MCInst(); I.setOpcode(PPC::ORI8);
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createImm(Higher));
+    Out.push_back(I);
+    // rldicr Reg, Reg, 32, 31
+    I = MCInst(); I.setOpcode(PPC::RLDICR);
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createImm(32));
+    I.addOperand(MCOperand::createImm(31));
+    Out.push_back(I);
+    // oris Reg, Reg, Hi
+    I = MCInst(); I.setOpcode(PPC::ORIS8);
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createImm(Hi));
+    Out.push_back(I);
+    // ori Reg, Reg, Lo
+    I = MCInst(); I.setOpcode(PPC::ORI8);
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createReg(Reg));
+    I.addOperand(MCOperand::createImm(Lo));
+    Out.push_back(I);
+  };
+
+  MCInst I;
+  // std r2, 24(r1)   ; save caller's TOC
+  I = MCInst(); I.setOpcode(PPC::STD);
+  I.addOperand(R(PPC::X2));
+  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // r2 = original TOC base
+  mat64(PPC::X2, OrigTOCBase);
+
+  // r12 = thunk address
+  mat64(PPC::X12, ThunkAddress);
+
+  // mtctr r12
+  I = MCInst(); I.setOpcode(PPC::MTCTR8);
+  I.addOperand(MCOperand::createReg(PPC::X12));
+  Out.push_back(I);
+
+  // bctrl            ; call thunk with original r2; thunk's ld r12,N(r2) works
+  I = MCInst(); I.setOpcode(PPC::BCTRL8);
+  Out.push_back(I);
+
+  // ld r2, 24(r1)    ; restore caller's TOC
+  I = MCInst(); I.setOpcode(PPC::LD);
+  I.addOperand(R(PPC::X2));
+  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // blr
+  I = MCInst(); I.setOpcode(PPC::BLR8);
+  Out.push_back(I);
+}
 namespace bolt {
 
 MCPlusBuilder *createPowerPCMCPlusBuilder(const MCInstrAnalysis *Analysis,
