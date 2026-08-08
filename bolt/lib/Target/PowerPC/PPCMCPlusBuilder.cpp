@@ -1185,11 +1185,51 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
     Out.push_back(I);
   };
 
+  // PPC64 ELFv2 ABI: the PLT thunk starts with "std r2, 24(r1)" which saves
+  // the caller's TOC into the *caller's* stack frame at offset 24.  When our
+  // stub calls the thunk via bctrl, r1 still points to our caller's frame, so
+  // the thunk overwrites offset 24 of our caller's frame -- destroying the
+  // BOLT TOC we saved there.
+  //
+  // Fix: allocate our own stack frame (stdu) so the thunk's std writes into
+  // OUR frame's slot 24, and save the BOLT TOC at slot 32 of OUR frame where
+  // the thunk will not touch it.
+  //
+  // Frame layout (offsets from new r1 after stdu):
+  //   0  : back-chain (old r1)     [stdu writes this]
+  //   16 : LR save area            (ELFv2 ABI requirement)
+  //   24 : TOC save area           (thunk will overwrite this -- OK)
+  //   32 : our BOLT TOC save       (we use this to restore r2 after return)
+  //
+  // Minimum ELFv2 frame size is 32 bytes; we use 48 to be safe and 16-byte
+  // aligned (48 = 3 * 16).
+
   MCInst I;
-  // std r2, 24(r1)   ; save caller's TOC
+
+  // mflr r0          ; save lr (so bctrl doesn't clobber caller's return addr)
+  I = MCInst(); I.setOpcode(PPC::MFLR8);
+  I.addOperand(MCOperand::createReg(PPC::X0));
+  Out.push_back(I);
+
+  // stdu r1, -48(r1) ; allocate 48-byte frame, save back-chain
+  I = MCInst(); I.setOpcode(PPC::STDU);
+  I.addOperand(R(PPC::X1));
+  I.addOperand(MCOperand::createImm(-48));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // std r0, 64(r1)   ; save lr at old_r1+16 = new_r1+48+16 = new_r1+64
+  //                  ; (ELFv2: lr saved at caller_frame+16, which is new_r1+48+16)
+  I = MCInst(); I.setOpcode(PPC::STD);
+  I.addOperand(MCOperand::createReg(PPC::X0));
+  I.addOperand(MCOperand::createImm(64));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // std r2, 32(r1)   ; save BOLT TOC at our private slot (thunk won't touch 32)
   I = MCInst(); I.setOpcode(PPC::STD);
   I.addOperand(R(PPC::X2));
-  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(MCOperand::createImm(32));
   I.addOperand(R(PPC::X1));
   Out.push_back(I);
 
@@ -1204,15 +1244,35 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   I.addOperand(MCOperand::createReg(PPC::X12));
   Out.push_back(I);
 
-  // bctrl            ; call thunk with original r2; thunk's ld r12,N(r2) works
+  // bctrl  ; call thunk with original r2; thunk does std r2,24(r1) (our slot),
+  //        ; ld r12,N(r2), bctr to real fn; real fn returns here via blr
   I = MCInst(); I.setOpcode(PPC::BCTRL8);
   Out.push_back(I);
 
-  // ld r2, 24(r1)    ; restore caller's TOC
+  // ld r2, 32(r1)    ; restore BOLT TOC from our private save slot
   I = MCInst(); I.setOpcode(PPC::LD);
   I.addOperand(R(PPC::X2));
-  I.addOperand(MCOperand::createImm(24));
+  I.addOperand(MCOperand::createImm(32));
   I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // ld r0, 64(r1)    ; reload saved lr
+  I = MCInst(); I.setOpcode(PPC::LD);
+  I.addOperand(MCOperand::createReg(PPC::X0));
+  I.addOperand(MCOperand::createImm(64));
+  I.addOperand(R(PPC::X1));
+  Out.push_back(I);
+
+  // mtlr r0          ; restore lr
+  I = MCInst(); I.setOpcode(PPC::MTLR8);
+  I.addOperand(MCOperand::createReg(PPC::X0));
+  Out.push_back(I);
+
+  // addi r1, r1, 48  ; deallocate frame
+  I = MCInst(); I.setOpcode(PPC::ADDI8);
+  I.addOperand(R(PPC::X1));
+  I.addOperand(R(PPC::X1));
+  I.addOperand(MCOperand::createImm(48));
   Out.push_back(I);
 
   // blr
