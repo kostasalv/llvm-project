@@ -3315,6 +3315,10 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
         for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
           if (auto Pos = SymName.find(Marker); Pos != StringRef::npos) {
             StringRef RealName = SymName.drop_front(Pos + Marker.size());
+            // Strip trailing "/N" version suffix (e.g. "getenv@@GLIBC_2.17/1"
+            // → "getenv@@GLIBC_2.17") to match the key used in lookup().
+            if (auto Slash = RealName.rfind('/'); Slash != StringRef::npos)
+              RealName = RealName.take_front(Slash);
             BC.PPC64RealNameToStubName.insert({RealName, StubName});
             break;
           }
@@ -3344,6 +3348,10 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
   for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
     if (auto Pos = SymName.find(Marker); Pos != StringRef::npos) {
       StringRef RealName = SymName.drop_front(Pos + Marker.size());
+      // Strip trailing "/N" version suffix (e.g. "getenv@@GLIBC_2.17/1"
+      // → "getenv@@GLIBC_2.17") to match the key used in lookup().
+      if (auto Slash = RealName.rfind('/'); Slash != StringRef::npos)
+        RealName = RealName.take_front(Slash);
       BC.PPC64RealNameToStubName.insert({RealName, StubName});
       break;
     }
