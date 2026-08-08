@@ -268,6 +268,11 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
   lookup(const LookupMap &Symbols,
          std::unique_ptr<jitlink::JITLinkAsyncLookupContinuation> LC) override {
     jitlink::AsyncLookupResult AllResults;
+    // Diagnostic: confirm lookup() is called and show IsPPC64 + symbol count.
+    errs() << "BOLT-PPC64-LOOKUP-ENTRY: IsPPC64=" << IsPPC64
+           << " nsyms=" << Symbols.size()
+           << " mapsize=" << Linker.BC.PPC64RealNameToStubName.size()
+           << " Graph=" << (Graph ? "yes" : "no") << "\n";
 
     // PPC64 ELFv2 helper: given a real symbol name (e.g. "getenv@@GLIBC_2.17"),
     // check if BC has a BOLT safe stub for it, and if so return its address.
