@@ -1219,6 +1219,8 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   I = MCInst(); I.setOpcode(PPC::BLR8);
   Out.push_back(I);
 }
+
+namespace llvm {
 namespace bolt {
 
 MCPlusBuilder *createPowerPCMCPlusBuilder(const MCInstrAnalysis *Analysis,
