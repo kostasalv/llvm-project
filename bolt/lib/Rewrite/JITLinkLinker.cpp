@@ -331,26 +331,27 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
             std::string RealNameStr = RealName.str();
             LLVM_DEBUG(dbgs() << "BOLT PPC64: redirecting PLT stub lookup "
                                << SymName << " -> " << RealNameStr << "\n");
+            // Check for a safe BOLT stub FIRST — before trying to resolve the
+            // real symbol name. External PLT symbols (e.g. "getenv@@GLIBC_2.17")
+            // are never in Symtab at lookup() time (notifyResolved hasn't fired),
+            // so lookupSymbolInfo would miss them. We only need the stub address.
+            if (auto StubAddr = getPPC64StubAddr(RealName)) {
+              errs() << "BOLT-PPC64: " << SymName
+                     << " -> (plt-redirect) redirected to BOLT stub 0x"
+                     << Twine::utohexstr(*StubAddr) << "\n";
+              AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                  orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
+              goto next_symbol;
+            }
             // Try to resolve the real symbol name (includes local symbols that
             // getBinaryDataByName misses because it only covers global symbols).
             if (auto SymInfo = Linker.lookupSymbolInfo(RealNameStr)) {
               uint64_t Addr = SymInfo->Address;
-              // If there's a safe BOLT stub for this real name, use it.
-              if (auto StubAddr = getPPC64StubAddr(RealName)) {
-                errs() << "BOLT-PPC64: " << SymName
-                       << " -> (plt-redirect) PLT thunk 0x"
-                       << Twine::utohexstr(Addr)
-                       << " redirected to BOLT stub 0x"
-                       << Twine::utohexstr(*StubAddr) << "\n";
-                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                    orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
-              } else {
-                LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
-                                  << " -> (plt-redirect) symtab 0x"
-                                  << Twine::utohexstr(Addr) << "\n");
-                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                    orc::ExecutorAddr(Addr), JITSymbolFlags());
-              }
+              LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
+                                << " -> (plt-redirect) symtab 0x"
+                                << Twine::utohexstr(Addr) << "\n");
+              AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                  orc::ExecutorAddr(Addr), JITSymbolFlags());
               goto next_symbol;
             }
             if (const BinaryData *I =
@@ -369,26 +370,25 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
             // stripping the "@@VERSION" suffix and looking up the bare name.
             if (auto AtAt = RealName.find("@@"); AtAt != StringRef::npos) {
               std::string BareNameStr = RealName.take_front(AtAt).str();
+              StringRef BareName(BareNameStr);
               LLVM_DEBUG(dbgs() << "BOLT PPC64: trying bare name "
                                  << BareNameStr << "\n");
+              // Check stub first before trying symbol resolution.
+              if (auto StubAddr = getPPC64StubAddr(BareName)) {
+                errs() << "BOLT-PPC64: " << SymName
+                       << " -> (plt-redirect-bare) redirected to BOLT stub 0x"
+                       << Twine::utohexstr(*StubAddr) << "\n";
+                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                    orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
+                goto next_symbol;
+              }
               if (auto SymInfo = Linker.lookupSymbolInfo(BareNameStr)) {
                 uint64_t Addr = SymInfo->Address;
-                StringRef BareName(BareNameStr);
-                if (auto StubAddr = getPPC64StubAddr(BareName)) {
-                  errs() << "BOLT-PPC64: " << SymName
-                         << " -> (plt-redirect-bare) PLT thunk 0x"
-                         << Twine::utohexstr(Addr)
-                         << " redirected to BOLT stub 0x"
-                         << Twine::utohexstr(*StubAddr) << "\n";
-                  AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                      orc::ExecutorAddr(*StubAddr), JITSymbolFlags());
-                } else {
-                  LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
-                                    << " -> (plt-redirect-bare) symtab 0x"
-                                    << Twine::utohexstr(Addr) << "\n");
-                  AllResults[Symbol.first] = orc::ExecutorSymbolDef(
-                      orc::ExecutorAddr(Addr), JITSymbolFlags());
-                }
+                LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
+                                  << " -> (plt-redirect-bare) symtab 0x"
+                                  << Twine::utohexstr(Addr) << "\n");
+                AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+                    orc::ExecutorAddr(Addr), JITSymbolFlags());
                 goto next_symbol;
               }
               if (const BinaryData *I =
