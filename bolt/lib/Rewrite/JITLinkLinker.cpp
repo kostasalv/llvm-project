@@ -278,19 +278,30 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       if (!IsPPC64)
         return std::nullopt;
       auto It = Linker.BC.PPC64RealNameToStubName.find(RealName);
-      if (It == Linker.BC.PPC64RealNameToStubName.end())
+      if (It == Linker.BC.PPC64RealNameToStubName.end()) {
+        errs() << "BOLT-PPC64-STUBMAP: miss for '" << RealName
+               << "' (map size=" << Linker.BC.PPC64RealNameToStubName.size()
+               << ")\n";
         return std::nullopt;
+      }
       StringRef StubName = It->second;
+      errs() << "BOLT-PPC64-STUBMAP: hit '" << RealName
+             << "' -> '" << StubName << "' Graph=" << (Graph ? "yes" : "no")
+             << "\n";
       // Try Graph first (same-object stubs, addresses assigned at PostAlloc).
       if (Graph) {
         for (auto *Sym : Graph->defined_symbols()) {
           if (Sym->hasName() && *Sym->getName() == StubName)
             return Sym->getAddress().getValue();
         }
+        errs() << "BOLT-PPC64-STUBMAP: '" << StubName
+               << "' not found in Graph defined_symbols\n";
       }
       // Fallback: Symtab (stubs from previously-linked objects).
       if (auto SI = Linker.lookupSymbolInfo(StubName))
         return SI->Address;
+      errs() << "BOLT-PPC64-STUBMAP: '" << StubName
+             << "' not in Symtab either — returning nullopt\n";
       return std::nullopt;
     };
 
@@ -329,8 +340,10 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
                              (RealName[0] >= '0' && RealName[0] <= '9');
           if (!IsAnonymous) {
             std::string RealNameStr = RealName.str();
-            LLVM_DEBUG(dbgs() << "BOLT PPC64: redirecting PLT stub lookup "
-                               << SymName << " -> " << RealNameStr << "\n");
+            errs() << "BOLT-PPC64-PLT: sym='" << SymName
+                   << "' realname='" << RealNameStr
+                   << "' mapsize=" << Linker.BC.PPC64RealNameToStubName.size()
+                   << "\n";
             // Check for a safe BOLT stub FIRST — before trying to resolve the
             // real symbol name. External PLT symbols (e.g. "getenv@@GLIBC_2.17")
             // are never in Symtab at lookup() time (notifyResolved hasn't fired),
