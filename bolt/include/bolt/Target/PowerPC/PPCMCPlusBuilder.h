@@ -135,6 +135,30 @@ public:
   //   bctr
   void buildCallStubGOTSlot(MCContext *Ctx, uint64_t GotSlotAddress,
                             std::vector<MCInst> &Out) const;
+
+  // Build a PPC64 ELFv2 call stub that restores the original TOC (r2) before
+  // calling through the original PLT thunk.  Required when the thunk uses
+  // "ld r12, N(r2)" with the original TOC base and the caller has already
+  // set r2 to BOLT's new TOC.
+  //
+  //   std   r2, 24(r1)           ; save caller TOC
+  //   lis   r2, OrigTOC@highest
+  //   ori   r2, r2, OrigTOC@higher
+  //   rldicr r2, r2, 32, 31
+  //   oris  r2, r2, OrigTOC@h
+  //   ori   r2, r2, OrigTOC@l   ; r2 = original TOC base
+  //   lis   r12, ThunkAddr@highest
+  //   ori   r12, r12, ThunkAddr@higher
+  //   rldicr r12, r12, 32, 31
+  //   oris  r12, r12, ThunkAddr@h
+  //   ori   r12, r12, ThunkAddr@l
+  //   mtctr r12
+  //   bctrl                      ; call thunk (thunk uses ld r12,N(r2), works)
+  //   ld    r2, 24(r1)           ; restore caller TOC
+  //   blr
+  void buildCallStubTOCThunk(MCContext *Ctx, uint64_t ThunkAddress,
+                             uint64_t OrigTOCBase,
+                             std::vector<MCInst> &Out) const;
 };
 
 } // namespace bolt
