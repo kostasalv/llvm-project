@@ -674,18 +674,23 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                << " lastOpc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                << "\n";
         if (isCondBr) {
-          // Case 2: BB ends with conditional branch.  Advance InsertionPoint
-          // past the fall-through successor so the stub doesn't sit between BB
-          // and FT (which would make the fall-through land in the stub when the
-          // branch is not taken).
+          // Case 2: BB ends with conditional branch (gBC/beq etc.).
+          // The relay stub will be placed right after BB.  When the cond-branch
+          // is NOT taken, the CPU falls through to the stub and re-invokes the
+          // call with whatever r3 was returned.
+          //
+          // Fix: add an explicit unconditional branch to BB's fall-through
+          // successor AFTER the conditional branch.  This makes the fall-through
+          // jump past the stub to the real successor.  Deferred to avoid
+          // iterator invalidation.
           BinaryBasicBlock *FT = BB.getFallthrough();
           errs() << "BOLT PPC64 LongJmp DBG: isCondBr=yes FT=" << (FT ? "yes" : "null")
                  << " BB.succ_size()=" << BB.succ_size() << "\n";
           if (FT) {
-            errs() << "BOLT PPC64 LongJmp DBG: advancing InsertionPoint past FT BB\n";
-            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing InsertionPoint "
-                                 "past conditional-branch fallthrough BB\n");
-            InsertionPoint = FT;
+            errs() << "BOLT PPC64 LongJmp DBG: inserting b <FT> after cond-branch\n";
+            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <FT> to prevent "
+                                 "stub fall-through after conditional branch\n");
+            PPC64FallthroughFix.push_back(&BB);
           }
         } else if (!isBranchLast && BB.getFallthrough()) {
           // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
@@ -707,16 +712,25 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
 
   // PPC64: add explicit fallthrough branches to BBs that needed them.
   // Done outside the instruction loop to avoid iterator invalidation.
+  //
+  // Case 1 (non-branch): BB ends with non-branch (e.g. ld r2,24(r1)), so
+  // fall-through physically enters the stub. Add b <FT> to make it skip over.
+  //
+  // Case 2 (conditional branch): BB ends with a conditional branch (gBC/beq).
+  // When the branch is NOT taken, fall-through enters the stub. Add b <FT>
+  // after the conditional branch to make the fall-through skip over the stub.
+  // This turns the BB into: gBC <taken-target>, b <FT>
+  // — exactly what BOLT does for reordered blocks anyway.
   for (BinaryBasicBlock *BB : PPC64FallthroughFix) {
     BinaryBasicBlock *FTSucc = BB->getFallthrough();
     if (!FTSucc)
       continue;
-    // Re-check: another iteration may have already added a branch.
+    // Re-check: another iteration may have already added an unconditional
+    // branch (b <FT>) to this BB.
     const MCInst *LastNonPseudo = BB->getLastNonPseudoInstr();
-    bool isBranchLast = LastNonPseudo &&
-                        (BC.MIB->isConditionalBranch(*LastNonPseudo) ||
-                         BC.MIB->isUnconditionalBranch(*LastNonPseudo));
-    if (!isBranchLast) {
+    bool isUncondLast = LastNonPseudo &&
+                        BC.MIB->isUnconditionalBranch(*LastNonPseudo);
+    if (!isUncondLast) {
       LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <fallthrough> "
                            "to prevent stub fall-through\n");
       MCInst BranchInst;
