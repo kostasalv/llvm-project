@@ -667,6 +667,7 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
         errs() << "BOLT PPC64 LongJmp DBG: call in BB size=" << BB.size()
+               << " callOpc=" << (int)Inst.getOpcode()
                << " isBranchLast=" << (isBranchLast ? "yes" : "no")
                << " isCondBr=" << (isCondBr ? "yes" : "no")
                << " isUncondBr=" << (isUncondBr ? "yes" : "no")
