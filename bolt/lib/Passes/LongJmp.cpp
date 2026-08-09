@@ -640,18 +640,20 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: if this is a call stub and the calling BB ends with a
-      // non-branch (fall-through) instruction, inserting the stub immediately
-      // after the BB would make the fall-through land in the stub and cause
-      // incorrect re-execution of the call (e.g. bl+ld_r2_24r1 pair where
-      // ld r2,24(r1) is the TOC restore and the fall-through should continue
-      // to the next BB, not re-execute the call stub).
+      // PPC64 ELFv2: placing a call relay stub immediately after the calling BB
+      // can corrupt fall-through control flow in two ways:
       //
-      // Fix: append an explicit unconditional branch to the calling BB so that
-      // the fall-through goes to the correct successor, and the stub can still
-      // be placed nearby (within 26-bit bl range) without corrupting flow.
-      // We defer the actual insertion to after the inner instruction loop
-      // to avoid invalidating iterators.
+      // Case 1 – BB ends with a non-branch (e.g. ld r2,24(r1) TOC restore):
+      //   The fall-through physically executes the stub, re-invoking the call.
+      //   Fix: add an explicit unconditional branch to the BB so the fall-through
+      //   jumps over the stub to the real successor.  Deferred to avoid iterator
+      //   invalidation.
+      //
+      // Case 2 – BB ends with a conditional branch (e.g. beq):
+      //   When the branch is NOT taken, the fall-through lands in the stub,
+      //   re-invoking the call with whatever r3 the call just returned.
+      //   Fix: advance InsertionPoint past the fall-through successor BB so
+      //   the stub is placed after the fall-through BB, not between BB and it.
       if (BC.isPPC64() && BC.MIB->isCall(Inst) &&
           InsertionPoint == &BB) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
@@ -661,12 +663,23 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
         LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB size=" << BB.size()
                           << " lastNonPseudo=" << (LastNonPseudo ? "yes" : "null")
                           << " isBranchLast=" << (isBranchLast ? "yes" : "no")
+                          << " isCondBr=" << (isCondBr ? "yes" : "no")
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
-        // If the BB has a fall-through (no terminating branch), mark it for
-        // an explicit unconditional branch to prevent stub fall-through.
-        if (!isBranchLast && BB.getFallthrough())
+        if (isCondBr) {
+          // Case 2: BB ends with conditional branch.  Advance InsertionPoint
+          // past the fall-through successor so the stub doesn't sit between BB
+          // and FT (which would make the fall-through land in the stub when the
+          // branch is not taken).
+          if (BinaryBasicBlock *FT = BB.getFallthrough()) {
+            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing InsertionPoint "
+                                 "past conditional-branch fallthrough BB\n");
+            InsertionPoint = FT;
+          }
+        } else if (!isBranchLast && BB.getFallthrough()) {
+          // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
           PPC64FallthroughFix.push_back(&BB);
+        }
       }
 
       // Create a stub to handle a far-away target
