@@ -644,8 +644,15 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       // call.  Move the stub to the end of the function to avoid this.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
-        if (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo))
+        LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB, lastNonPseudo="
+                          << (LastNonPseudo ? "yes" : "null")
+                          << " isCondBr="
+                          << (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo) ? "yes" : "no")
+                          << "\n");
+        if (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo)) {
+          LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: moving call stub to end of function\n");
           InsertionPoint = &*std::prev(Func.end());
+        }
       }
 
       // Create a stub to handle a far-away target
