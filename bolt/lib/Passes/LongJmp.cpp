@@ -672,6 +672,8 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                << " isCondBr=" << (isCondBr ? "yes" : "no")
                << " isUncondBr=" << (isUncondBr ? "yes" : "no")
                << " lastOpc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
+               << " Func=" << Func.getPrintName()
+               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
                << "\n";
         if (isCondBr) {
           // Case 2: BB ends with conditional branch (gBC/beq etc.).
