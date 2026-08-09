@@ -436,6 +436,23 @@ bool PPCMCPlusBuilder::isReturn(const MCInst &Inst) const {
   return Inst.getOpcode() == PPC::BLR;
 }
 
+bool PPCMCPlusBuilder::isTerminator(const MCInst &Inst) const {
+  // The base class implementation uses MCInstrAnalysis::isTerminator(), which
+  // relies on the MCInstrDesc::isTerminator() bit.  PPC's gBC/gBCL (the MC
+  // forms of the generic conditional branch, used by the disassembler) are
+  // missing the Terminator bit in their MCInstrDesc (they only have Branch).
+  // Without this override, BOLT never splits basic blocks at gBC instructions,
+  // causing it to treat the entire body of functions like
+  // _GLOBAL__sub_I_*.cpp as a single 100+ instruction BB.
+  //
+  // We manually mark every instruction that isBranch() recognises as a
+  // terminator, mirroring what the base-class does for architectures that set
+  // the Terminator flag consistently.
+  if (isBranch(Inst) || isReturn(Inst))
+    return true;
+  return MCPlusBuilder::isTerminator(Inst);
+}
+
 bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   switch (opc(I)) {
   case PPC::BC:    // branch conditional (explicit BO,BI fields)
