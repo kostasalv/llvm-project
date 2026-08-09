@@ -637,6 +637,17 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
+      // PPC64 ELFv2: if this is a call stub and the calling BB ends with a
+      // conditional branch (the call is not the BB terminator), placing the
+      // stub immediately after the BB would make the conditional branch's
+      // fall-through land in the stub, causing incorrect re-execution of the
+      // call.  Move the stub to the end of the function to avoid this.
+      if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
+        const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
+        if (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo))
+          InsertionPoint = &*std::prev(Func.end());
+      }
+
       // Create a stub to handle a far-away target
       Insertions.emplace_back(InsertionPoint,
                               replaceTargetWithStub(BB, Inst, DotAddress,
