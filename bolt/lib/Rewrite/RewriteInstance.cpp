@@ -3477,25 +3477,12 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
   if (IsPPC64 && IsFromCode &&
       (RType == ELF::R_PPC64_REL24 || RType == ELF::R_PPC64_REL24_NOTOC) &&
       ReferencedSymbol) {
-
-    const StringRef SymName = ReferencedSymbol->getName();
-    const bool AlreadyStub = SymName.starts_with("__bolt_ppc_abs_call_stub.");
-
-    // Diagnostic: log every PLT-thunk-targeted relocation so we can see
-    // what name reaches getOrCreatePPCAbsoluteCallStub.
-    if (!AlreadyStub && (SymName.contains(".plt_call.") ||
-                         SymName.contains(".plt_branch.")))
-      errs() << "BOLT-PPC64-REL24: PLT reloc sym=" << SymName
-             << " addr=" << Twine::utohexstr(SymbolAddress) << "\n";
-
-    if (!AlreadyStub && shouldUsePPCAbsoluteCallStub(Rel, ReferencedSymbol)) {
-      auto *StubBF =
-          getOrCreatePPCAbsoluteCallStub(*BC, *ReferencedSymbol, *BC->MIB,
-                                         SymbolAddress);
-      ReferencedSymbol = StubBF->getSymbol(); // redirect to stub
-      Addend = 0;
-      ExtractedValue = 0;
-    }
+    // No stub creation needed: BOLT TOC == original TOC (.got is not moved),
+    // so PLT thunks work correctly when called with BOLT's r2. The PLT thunk
+    // name (e.g. "0000d4fc.plt_call.getenv@@GLIBC_2.17") is resolved directly
+    // to its address in BinaryData by JITLinkLinker::lookup().
+    (void)ReferencedSymbol; // suppress unused warning if nothing else uses it
+  }
   }
 
   ErrorOr<BinarySection &> ReferencedSection{std::errc::bad_address};
