@@ -671,13 +671,18 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
           // past the fall-through successor so the stub doesn't sit between BB
           // and FT (which would make the fall-through land in the stub when the
           // branch is not taken).
-          if (BinaryBasicBlock *FT = BB.getFallthrough()) {
+          BinaryBasicBlock *FT = BB.getFallthrough();
+          errs() << "BOLT PPC64 LongJmp DBG: isCondBr=yes FT=" << (FT ? "yes" : "null")
+                 << " BB.succ_size()=" << BB.succ_size() << "\n";
+          if (FT) {
+            errs() << "BOLT PPC64 LongJmp DBG: advancing InsertionPoint past FT BB\n";
             LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing InsertionPoint "
                                  "past conditional-branch fallthrough BB\n");
             InsertionPoint = FT;
           }
         } else if (!isBranchLast && BB.getFallthrough()) {
           // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
+          errs() << "BOLT PPC64 LongJmp DBG: non-branch fallthrough fix\n";
           PPC64FallthroughFix.push_back(&BB);
         }
       }
