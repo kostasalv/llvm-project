@@ -446,9 +446,10 @@ bool PPCMCPlusBuilder::isTerminator(const MCInst &Inst) const {
   // _GLOBAL__sub_I_*.cpp as a single 100+ instruction BB.
   //
   // We manually mark every instruction that isBranch() recognises as a
-  // terminator, mirroring what the base-class does for architectures that set
-  // the Terminator flag consistently.
-  if (isBranch(Inst) || isReturn(Inst))
+  // terminator, EXCEPT for call instructions (BL/BLA/BL8 etc.) which are
+  // branches-with-link (calls) and should not terminate the basic block.
+  // Call instructions have their own handling in BOLT's CFG builder.
+  if ((isBranch(Inst) || isReturn(Inst)) && !isCall(Inst))
     return true;
   return MCPlusBuilder::isTerminator(Inst);
 }
