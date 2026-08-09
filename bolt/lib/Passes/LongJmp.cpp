@@ -666,6 +666,12 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                           << " isCondBr=" << (isCondBr ? "yes" : "no")
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
+        errs() << "BOLT PPC64 LongJmp DBG: call in BB size=" << BB.size()
+               << " isBranchLast=" << (isBranchLast ? "yes" : "no")
+               << " isCondBr=" << (isCondBr ? "yes" : "no")
+               << " isUncondBr=" << (isUncondBr ? "yes" : "no")
+               << " lastOpc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
+               << "\n";
         if (isCondBr) {
           // Case 2: BB ends with conditional branch.  Advance InsertionPoint
           // past the fall-through successor so the stub doesn't sit between BB
