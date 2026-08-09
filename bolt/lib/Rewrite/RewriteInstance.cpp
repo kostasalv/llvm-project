@@ -3483,7 +3483,6 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
     // to its address in BinaryData by JITLinkLinker::lookup().
     (void)ReferencedSymbol; // suppress unused warning if nothing else uses it
   }
-  }
 
   ErrorOr<BinarySection &> ReferencedSection{std::errc::bad_address};
 
