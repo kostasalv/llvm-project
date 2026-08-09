@@ -645,17 +645,21 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
         bool isCondBr = LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo);
-        bool isCall2  = LastNonPseudo && BC.MIB->isCall(*LastNonPseudo);
-        bool isBranch2= LastNonPseudo && BC.MIB->isBranch(*LastNonPseudo);
+        bool isUncondBr = LastNonPseudo && BC.MIB->isUnconditionalBranch(*LastNonPseudo);
+        bool isBranchLast = isCondBr || isUncondBr;
         LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB size=" << BB.size()
                           << " lastNonPseudo=" << (LastNonPseudo ? "yes" : "null")
                           << " isCondBr=" << (isCondBr ? "yes" : "no")
-                          << " isCall=" << (isCall2 ? "yes" : "no")
-                          << " isBranch=" << (isBranch2 ? "yes" : "no")
+                          << " isUncondBr=" << (isUncondBr ? "yes" : "no")
+                          << " isCall=" << (LastNonPseudo && BC.MIB->isCall(*LastNonPseudo) ? "yes" : "no")
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
-        if (isCondBr) {
-          LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: moving call stub to end of function\n");
+        // If the calling BB ends with a non-branch instruction (e.g. ld r2,24(r1)
+        // TOC restore), inserting the stub immediately after the BB would make
+        // the fall-through land in the stub, causing incorrect re-execution of
+        // the call. Move the stub to the end of the function to avoid this.
+        if (!isBranchLast) {
+          LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: BB fall-through, moving call stub to end\n");
           InsertionPoint = &*std::prev(Func.end());
         }
       }
