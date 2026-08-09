@@ -638,29 +638,39 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
         InsertionPoint = &*std::prev(Func.end());
 
       // PPC64 ELFv2: if this is a call stub and the calling BB ends with a
-      // conditional branch (the call is not the BB terminator), placing the
-      // stub immediately after the BB would make the conditional branch's
-      // fall-through land in the stub, causing incorrect re-execution of the
-      // call.  Move the stub to the end of the function to avoid this.
-      if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
+      // non-branch (fall-through) instruction, inserting the stub immediately
+      // after the BB would make the fall-through land in the stub and cause
+      // incorrect re-execution of the call (e.g. bl+ld_r2_24r1 pair where
+      // ld r2,24(r1) is the TOC restore and the fall-through should continue
+      // to the next BB, not re-execute the call stub).
+      //
+      // Fix: append an explicit unconditional branch to the calling BB so that
+      // the fall-through goes to the correct successor, and the stub can still
+      // be placed nearby (within 26-bit bl range) without corrupting flow.
+      if (BC.isPPC64() && BC.MIB->isCall(Inst) &&
+          InsertionPoint == &BB) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
         bool isCondBr = LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo);
         bool isUncondBr = LastNonPseudo && BC.MIB->isUnconditionalBranch(*LastNonPseudo);
         bool isBranchLast = isCondBr || isUncondBr;
         LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB size=" << BB.size()
                           << " lastNonPseudo=" << (LastNonPseudo ? "yes" : "null")
-                          << " isCondBr=" << (isCondBr ? "yes" : "no")
-                          << " isUncondBr=" << (isUncondBr ? "yes" : "no")
-                          << " isCall=" << (LastNonPseudo && BC.MIB->isCall(*LastNonPseudo) ? "yes" : "no")
+                          << " isBranchLast=" << (isBranchLast ? "yes" : "no")
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
-        // If the calling BB ends with a non-branch instruction (e.g. ld r2,24(r1)
-        // TOC restore), inserting the stub immediately after the BB would make
-        // the fall-through land in the stub, causing incorrect re-execution of
-        // the call. Move the stub to the end of the function to avoid this.
+        // If the BB has a fall-through (no terminating branch), add an explicit
+        // unconditional branch to the fall-through successor so the stub placed
+        // after this BB is not accidentally entered via fall-through.
         if (!isBranchLast) {
-          LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: BB fall-through, moving call stub to end\n");
-          InsertionPoint = &*std::prev(Func.end());
+          BinaryBasicBlock *FTSucc = BB.getFallthrough();
+          if (FTSucc) {
+            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <fallthrough> "
+                                 "to prevent stub fall-through\n");
+            MCInst BranchInst;
+            BC.MIB->createUncondBranch(BranchInst, FTSucc->getLabel(),
+                                       BC.Ctx.get());
+            BB.addInstruction(std::move(BranchInst));
+          }
         }
       }
 
