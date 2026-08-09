@@ -644,12 +644,17 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       // call.  Move the stub to the end of the function to avoid this.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
-        LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB, lastNonPseudo="
-                          << (LastNonPseudo ? "yes" : "null")
-                          << " isCondBr="
-                          << (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo) ? "yes" : "no")
+        bool isCondBr = LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo);
+        bool isCall2  = LastNonPseudo && BC.MIB->isCall(*LastNonPseudo);
+        bool isBranch2= LastNonPseudo && BC.MIB->isBranch(*LastNonPseudo);
+        LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB size=" << BB.size()
+                          << " lastNonPseudo=" << (LastNonPseudo ? "yes" : "null")
+                          << " isCondBr=" << (isCondBr ? "yes" : "no")
+                          << " isCall=" << (isCall2 ? "yes" : "no")
+                          << " isBranch=" << (isBranch2 ? "yes" : "no")
+                          << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
-        if (LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo)) {
+        if (isCondBr) {
           LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: moving call stub to end of function\n");
           InsertionPoint = &*std::prev(Func.end());
         }
