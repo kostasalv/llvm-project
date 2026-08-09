@@ -1049,11 +1049,13 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
   const unsigned R12 = PPC::X12;
 
   // Split the 64-bit address into four 16-bit pieces.
+  // Note: use plain bit-extraction (no carry adjustment) because we use
+  // logical oris/ori instructions which do NOT sign-extend operands.
   uint64_t Addr = GotSlotAddress;
   uint16_t Highest = (Addr >> 48) & 0xffff;
   uint16_t Higher  = (Addr >> 32) & 0xffff;
   uint16_t Lo  = Addr & 0xffff;
-  uint16_t Hi  = ((Addr >> 16) & 0xffff) + ((Lo & 0x8000) ? 1 : 0);
+  uint16_t Hi  = (Addr >> 16) & 0xffff;
 
   MCInst I;
 
@@ -1146,12 +1148,14 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
                                               std::vector<MCInst> &Out) const {
   Out.clear();
   // Helper lambda: materialize a 64-bit immediate into a GPR using the
-  // lis/ori/rldicr/oris/ori sequence (same as buildCallStubGOTSlot).
+  // lis/ori/rldicr/oris/ori sequence.
+  // Note: plain bit-extraction, NO carry adjustment — oris/ori are logical
+  // and do not sign-extend, so no carry from bit 15 is needed.
   auto mat64 = [&](unsigned Reg, uint64_t Val) {
     uint16_t Highest = (Val >> 48) & 0xffff;
     uint16_t Higher  = (Val >> 32) & 0xffff;
     uint16_t Lo  = Val & 0xffff;
-    uint16_t Hi  = ((Val >> 16) & 0xffff) + ((Lo & 0x8000) ? 1 : 0);
+    uint16_t Hi  = (Val >> 16) & 0xffff;
     MCInst I;
     // lis Reg, Highest
     I = MCInst(); I.setOpcode(PPC::LIS8);
