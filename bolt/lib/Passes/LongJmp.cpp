@@ -595,6 +595,9 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
 
   // Add necessary stubs for branch targets we know we can't fit in the
   // instruction
+  // PPC64: track BBs that need an explicit fallthrough branch before their stub.
+  std::vector<BinaryBasicBlock *> PPC64FallthroughFix;
+
   for (BinaryBasicBlock &BB : Func) {
     uint64_t DotAddress = BBAddresses[&BB];
     // Stubs themselves are relaxed on the next loop
@@ -647,6 +650,8 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       // Fix: append an explicit unconditional branch to the calling BB so that
       // the fall-through goes to the correct successor, and the stub can still
       // be placed nearby (within 26-bit bl range) without corrupting flow.
+      // We defer the actual insertion to after the inner instruction loop
+      // to avoid invalidating iterators.
       if (BC.isPPC64() && BC.MIB->isCall(Inst) &&
           InsertionPoint == &BB) {
         const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
@@ -658,20 +663,10 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                           << " isBranchLast=" << (isBranchLast ? "yes" : "no")
                           << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
                           << "\n");
-        // If the BB has a fall-through (no terminating branch), add an explicit
-        // unconditional branch to the fall-through successor so the stub placed
-        // after this BB is not accidentally entered via fall-through.
-        if (!isBranchLast) {
-          BinaryBasicBlock *FTSucc = BB.getFallthrough();
-          if (FTSucc) {
-            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <fallthrough> "
-                                 "to prevent stub fall-through\n");
-            MCInst BranchInst;
-            BC.MIB->createUncondBranch(BranchInst, FTSucc->getLabel(),
-                                       BC.Ctx.get());
-            BB.addInstruction(std::move(BranchInst));
-          }
-        }
+        // If the BB has a fall-through (no terminating branch), mark it for
+        // an explicit unconditional branch to prevent stub fall-through.
+        if (!isBranchLast && BB.getFallthrough())
+          PPC64FallthroughFix.push_back(&BB);
       }
 
       // Create a stub to handle a far-away target
@@ -682,6 +677,27 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                                                         : DotAddress));
 
       DotAddress += InsnSize;
+    }
+  }
+
+  // PPC64: add explicit fallthrough branches to BBs that needed them.
+  // Done outside the instruction loop to avoid iterator invalidation.
+  for (BinaryBasicBlock *BB : PPC64FallthroughFix) {
+    BinaryBasicBlock *FTSucc = BB->getFallthrough();
+    if (!FTSucc)
+      continue;
+    // Re-check: another iteration may have already added a branch.
+    const MCInst *LastNonPseudo = BB->getLastNonPseudoInstr();
+    bool isBranchLast = LastNonPseudo &&
+                        (BC.MIB->isConditionalBranch(*LastNonPseudo) ||
+                         BC.MIB->isUnconditionalBranch(*LastNonPseudo));
+    if (!isBranchLast) {
+      LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <fallthrough> "
+                           "to prevent stub fall-through\n");
+      MCInst BranchInst;
+      BC.MIB->createUncondBranch(BranchInst, FTSucc->getLabel(),
+                                 BC.Ctx.get());
+      BB->addInstruction(std::move(BranchInst));
     }
   }
 
