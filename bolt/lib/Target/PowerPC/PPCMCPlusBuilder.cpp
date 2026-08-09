@@ -136,6 +136,9 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   case PPC::BCL:
   case PPC::gBC:  // bt/bf mnemonics (alias for BC with specific BO values)
   case PPC::gBCL:
+  // BCC/BCCL: pred(imm), CR(reg), target(imm/expr) — target at operand 2
+  case PPC::BCC:
+  case PPC::BCCL:
     return 2;
 
   // Absolute branches/calls (AA=1) — no PC-relative operand
@@ -180,6 +183,10 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::gBC:
   case PPC::BCL:
   case PPC::gBCL:
+  case PPC::BCC:   // extended-mnemonic conditional branch (bt/bf/beq/bne...)
+  case PPC::BCCA:  // conditional branch absolute (extended mnemonic)
+  case PPC::BCCL:  // conditional branch with link (extended mnemonic)
+  case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
     return 16;
   default:
     return 0;
@@ -400,10 +407,14 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   case PPC::B:     // unconditional branch
   case PPC::BL:    // branch with link (treated as call, but still a branch)
   case PPC::BLA:   // absolute branch with link
-  case PPC::BC:    // conditional branch
+  case PPC::BC:    // conditional branch (BC/BCL with explicit BO,BI fields)
   case PPC::BCL:   // conditional branch with link
-  case PPC::gBC:   // bt/bf mnemonics (generic conditional branch with BO field)
-  case PPC::gBCL:  // btl/bfl mnemonics (conditional branch with link)
+  case PPC::BCC:   // conditional branch using extended mnemonics (bt/bf/beq/bne...)
+  case PPC::BCCA:  // conditional branch absolute (extended mnemonic)
+  case PPC::BCCL:  // conditional branch with link (extended mnemonic)
+  case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
+  case PPC::gBC:   // generic conditional branch (bt/bf with BO field)
+  case PPC::gBCL:  // generic conditional branch with link
   case PPC::BDNZ:  // decrement CTR and branch if not zero
   case PPC::BDNZL: // decrement CTR and branch with link
   case PPC::BCTR:  // branch to CTR
@@ -427,10 +438,14 @@ bool PPCMCPlusBuilder::isReturn(const MCInst &Inst) const {
 
 bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   switch (opc(I)) {
-  case PPC::BC:  // branch conditional
-  case PPC::BCL: // branch conditional to link
-  case PPC::gBC:  // bt/bf mnemonics
-  case PPC::gBCL: // btl/bfl mnemonics
+  case PPC::BC:    // branch conditional (explicit BO,BI fields)
+  case PPC::BCL:   // branch conditional with link
+  case PPC::BCC:   // extended-mnemonic conditional branch (bt/bf/beq/bne/bgt...)
+  case PPC::BCCA:  // extended-mnemonic conditional branch absolute
+  case PPC::BCCL:  // extended-mnemonic conditional branch with link
+  case PPC::BCCLA: // extended-mnemonic conditional branch with link absolute
+  case PPC::gBC:   // generic conditional branch (bt/bf with full BO field)
+  case PPC::gBCL:  // generic conditional branch with link
     return true;
   default:
     return false;
