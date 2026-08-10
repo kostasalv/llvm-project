@@ -590,6 +590,11 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
 
   BinaryBasicBlock *Frontier = getBBAtHotColdSplitPoint(Func);
   uint64_t FrontierAddress = Frontier ? BBAddresses[Frontier] : 0;
+  if (BC.isPPC64() && Func.getPrintName().contains("GLOBAL__sub_I_llc"))
+    errs() << "BOLT PPC64 LongJmp DBG3: relax() entered for "
+           << Func.getPrintName()
+           << " isSimple=" << (Func.isSimple() ? "yes" : "no")
+           << " numBBs=" << Func.size() << "\n";
   if (FrontierAddress)
     FrontierAddress += Frontier->getNumNonPseudos() * InsnSize;
 
