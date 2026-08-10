@@ -653,6 +653,21 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
         errs() << "BOLT PPC64 LongJmp DBG2: call stub needed in "
                << Func.getPrintName()
                << " isSimple=" << (Func.isSimple() ? "yes" : "no") << "\n";
+      // DBG6: trace ALL stubs where DotAddress is in the large cold region
+      // to identify which function object produces the crash stub
+      if (BC.isPPC64() && DotAddress >= 0x177f0000 && DotAddress <= 0x17810000) {
+        const MCInst *LN = BB.getLastNonPseudoInstr();
+        errs() << "BOLT PPC64 LongJmp DBG6: stub in cold region"
+               << " Func=" << Func.getPrintName()
+               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
+               << " numBBs=" << Func.size()
+               << " BBaddr=0x" << Twine::utohexstr(DotAddress)
+               << " callOpc=" << Inst.getOpcode()
+               << " isCall=" << (BC.MIB->isCall(Inst) ? "yes" : "no")
+               << " lastOpc=" << (LN ? (int)LN->getOpcode() : -1)
+               << " isCondBr=" << (LN && BC.MIB->isConditionalBranch(*LN) ? "yes" : "no")
+               << "\n";
+      }
       if (Func.isSimple() && !BC.MIB->isCall(Inst) && FrontierAddress &&
           !BB.isCold()) {
         int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
