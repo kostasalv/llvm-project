@@ -582,6 +582,21 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
       TgtBB = SSIter->second;
   }
 
+  // PPC64: if the instruction already points to a stub BB (local or shared),
+  // check that the stub BB's target symbol is valid.  If it's null (PLT stub
+  // not tracked as a BinaryFunction), skip — we can't create another level of
+  // stub and would loop forever.
+  if (BC.isPPC64() && TgtBB) {
+    auto StubsIter = Stubs.find(&Func);
+    bool IsLocalStub = StubsIter != Stubs.end() && StubsIter->second.count(TgtBB);
+    bool IsSharedStub = SharedStubs.count(TgtSym) != 0;
+    if (IsLocalStub || IsSharedStub) {
+      const MCSymbol *InnerSym = BC.MIB->getTargetSymbol(*TgtBB->begin());
+      if (!InnerSym)
+        return false; // stub target is unsymbolized, can't re-stub
+    }
+  }
+
   // PPC64 ELFv2: for non-call unconditional branches (tail-calls / trampolines)
   // targeting a non-simple function that will be emitted as raw bytes, skip
   // BOLT inline stub insertion.  The raw-byte function's layout is not tracked
