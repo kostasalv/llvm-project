@@ -3981,6 +3981,14 @@ void BinaryFunction::postProcessBranches() {
 
 MCSymbol *BinaryFunction::addEntryPointAtOffset(uint64_t Offset) {
   assert(Offset && "cannot add primary entry point");
+  // PPC64 diagnostic: trace who registers secondary entry on _Z41__static_init
+  if (BC.isPPC64() &&
+      getPrintName().find("_Z41__static_init") != std::string::npos &&
+      getPrintName().find("/1(") != std::string::npos) {
+    BC.errs() << "BOLT PPC64 DBG addEntryPointAtOffset: " << getPrintName()
+              << " offset=0x" << Twine::utohexstr(Offset)
+              << " CurrentState=" << (int)CurrentState << "\n";
+  }
 
   const uint64_t EntryPointAddress = getAddress() + Offset;
   assert(!isInConstantIsland(EntryPointAddress) &&
