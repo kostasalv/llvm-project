@@ -624,6 +624,10 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       // hot path if a branch, since this branch target is the cold region
       // (but first check that the far away stub will be in range).
       BinaryBasicBlock *InsertionPoint = &BB;
+      if (BC.isPPC64() && BC.MIB->isCall(Inst))
+        errs() << "BOLT PPC64 LongJmp DBG2: call stub needed in "
+               << Func.getPrintName()
+               << " isSimple=" << (Func.isSimple() ? "yes" : "no") << "\n";
       if (Func.isSimple() && !BC.MIB->isCall(Inst) && FrontierAddress &&
           !BB.isCold()) {
         int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
