@@ -2563,6 +2563,11 @@ Error BinaryFunction::buildCFG(MCPlusBuilder::AllocatorIdTy AllocatorId) {
   }
 
   if (BasicBlocks.empty()) {
+    if (BC.isPPC64() &&
+        getPrintName().find("_Z41__static_init") != std::string::npos &&
+        getPrintName().find("/1(") != std::string::npos)
+      BC.errs() << "BOLT PPC64 DBG buildCFG: BasicBlocks empty for "
+                << getPrintName() << "\n";
     setSimple(false);
     return createNonFatalBOLTError("");
   }
@@ -3456,6 +3461,13 @@ void BinaryFunction::setTrapOnEntry() {
 
 void BinaryFunction::setIgnored() {
   IsIgnored = true;
+  // PPC64 diagnostic: print stack when _Z41__static_init is ignored
+  if (BC.isPPC64() &&
+      getPrintName().find("_Z41__static_init") != std::string::npos &&
+      getPrintName().find("/1(") != std::string::npos) {
+    BC.errs() << "BOLT PPC64 DBG setIgnored: " << getPrintName()
+              << " CurrentState=" << (int)CurrentState << "\n";
+  }
 
   if (opts::processAllFunctions()) {
     // We can accept ignored functions before they've been disassembled.
