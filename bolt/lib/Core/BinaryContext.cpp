@@ -589,13 +589,6 @@ MCSymbol *BinaryContext::handleExternalBranchTarget(uint64_t Address,
     return nullptr;
   }
 
-  // PPC64 ELFv2: a reference to func+localEntryOffset is the ABI
-  // call-through-local-entry pattern — it is NOT a separate entry point.
-  // Treat it as a reference to the function start to avoid registering
-  // a secondary entry that PatchEntries cannot patch (they'd overlap).
-  if (isPPC64() && Offset != 0 && Offset == Target.getPPC64LocalEntryOffset())
-    return Target.getSymbol();
-
   return Offset ? Target.addEntryPointAtOffset(Offset) : Target.getSymbol();
 }
 

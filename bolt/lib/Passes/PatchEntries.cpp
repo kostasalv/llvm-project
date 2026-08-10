@@ -90,6 +90,17 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
     uint64_t NextValidByte = 0; // offset of the byte past the last patch
     bool Success = Function.forEachEntryPoint([&](uint64_t Offset,
                                                   const MCSymbol *Symbol) {
+      // PPC64 ELFv2: the local entry point (offset == getPPC64LocalEntryOffset)
+      // is an ABI artifact — callers that already set up r2 branch directly to
+      // it, skipping the 2-instruction global-entry TOC preamble.  It is NOT a
+      // separately patchable entry: the global-entry patch (at offset 0) already
+      // redirects execution to the new body, and the new body has its own
+      // global/local entry preamble.  Patching the local entry separately would
+      // overwrite valid instructions and is unnecessary; skip it silently.
+      if (BC.isPPC64() && Offset != 0 &&
+          Offset == Function.getPPC64LocalEntryOffset())
+        return true; // skip, but don't fail
+
       if (Offset < NextValidByte) {
         if (opts::Verbosity >= 1)
           BC.outs() << "BOLT-INFO: unable to patch entry point in " << Function
