@@ -1520,13 +1520,13 @@ Error BinaryFunction::disassemble() {
     if (MIB->isBranch(Instruction) || MIB->isCall(Instruction)) {
       // PPC64 debug: trace all branches in the problematic function
       if (BC.TheTriple->isPPC64() &&
-          getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
-        errs() << "BOLT PPC64 disasm DBG: branch/call at 0x"
+          (getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos ||
+           getPrintName().find("_Z41__static_init") != std::string::npos) &&
+          MIB->isConditionalBranch(Instruction)) {
+        errs() << "BOLT PPC64 disasm DBG: condBr at 0x"
                << Twine::utohexstr(AbsoluteInstrAddr)
                << " opc=" << Instruction.getOpcode()
-               << " isCondBr=" << (MIB->isConditionalBranch(Instruction) ? "yes" : "no")
-               << " isCall=" << (MIB->isCall(Instruction) ? "yes" : "no")
-               << "\n";
+               << " func=" << getPrintName() << "\n";
       }
 
       uint64_t TargetAddress = 0;
