@@ -568,6 +568,19 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
       TgtBB = SSIter->second;
   }
 
+  // PPC64 ELFv2: for non-call unconditional branches (tail-calls / trampolines)
+  // targeting a non-simple function that will be emitted as raw bytes, skip
+  // BOLT inline stub insertion.  The raw-byte function's layout is not tracked
+  // in BOLT's BB map, so a BOLT stub placed after the calling BB can land in
+  // the middle of the target function's cold output, corrupting it.
+  // JITLink will handle the range extension via $__STUBS instead.
+  if (BC.isPPC64() && !BC.MIB->isCall(Inst) && !TgtBB) {
+    uint64_t EntryID = 0;
+    const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+    if (TargetFunc && !TargetFunc->isSimple())
+      return false;
+  }
+
   int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
   assert(BitsAvail < 63 && "PCRelEncodingSize is too large to use int64_t to"
                            "check for out-of-bounds.");
