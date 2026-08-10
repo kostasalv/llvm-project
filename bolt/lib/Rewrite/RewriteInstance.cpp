@@ -1354,6 +1354,15 @@ void RewriteInstance::discoverFileObjects() {
                                     SymbolSize);
       if (!IsSimple)
         BF->setSimple(false);
+      // PPC64 ELFv2: record the local entry offset from st_other so that
+      // interprocedural references to func+localEntryOffset are not treated as
+      // secondary entry points (they are the ABI local entry, not real entries).
+      if (BC->isPPC64()) {
+        unsigned Other = ELFSymbolRef(Symbol).getOther();
+        int64_t LEOff = ELF::decodePPC64LocalEntryOffset(Other);
+        if (LEOff > 0)
+          BF->setPPC64LocalEntryOffset(static_cast<uint8_t>(LEOff));
+      }
     }
 
     // Check if it's a cold function fragment.
@@ -3662,10 +3671,20 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
         ExtractedValue = Address;
       } else if (RefFunctionOffset) {
         if (ContainingBF && ContainingBF != ReferencedBF) {
-          ReferencedSymbol =
-              ReferencedBF->isInConstantIsland(Address)
-                  ? ReferencedBF->getOrCreateIslandAccess(Address)
-                  : ReferencedBF->addEntryPointAtOffset(RefFunctionOffset);
+          // PPC64 ELFv2: a reference to func+localEntryOffset from another
+          // function is the ABI call-through-local-entry pattern.  Don't
+          // register it as a BOLT secondary entry point; treat it as a local
+          // label so PatchEntries can still patch the function.
+          bool IsPPC64LocalEntry =
+              BC->isPPC64() && RefFunctionOffset != 0 &&
+              RefFunctionOffset == ReferencedBF->getPPC64LocalEntryOffset();
+          if (ReferencedBF->isInConstantIsland(Address))
+            ReferencedSymbol = ReferencedBF->getOrCreateIslandAccess(Address);
+          else if (IsPPC64LocalEntry)
+            ReferencedSymbol = ReferencedBF->getOrCreateLocalLabel(Address);
+          else
+            ReferencedSymbol =
+                ReferencedBF->addEntryPointAtOffset(RefFunctionOffset);
         } else {
           ReferencedSymbol = ReferencedBF->getOrCreateLocalLabel(Address);
 

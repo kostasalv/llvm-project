@@ -277,6 +277,11 @@ private:
 
   BinaryContext &BC;
 
+  /// PPC64 ELFv2: local entry point byte offset (encoded in st_other).
+  /// For most functions this is 8 (= skip 2-instruction TOC preamble).
+  /// 0 means not set / not applicable.
+  uint8_t PPC64LocalEntryOffset{0};
+
   std::unique_ptr<BinaryLoopInfo> BLI;
   std::unique_ptr<BinaryDominatorTree> BDT;
 
@@ -1232,6 +1237,10 @@ public:
 
   /// Return the maximum size the body of the function could have.
   uint64_t getMaxSize() const { return MaxSize; }
+
+  /// PPC64 ELFv2: return local entry point byte offset (from st_other), or 0.
+  uint8_t getPPC64LocalEntryOffset() const { return PPC64LocalEntryOffset; }
+  void setPPC64LocalEntryOffset(uint8_t Off) { PPC64LocalEntryOffset = Off; }
 
   /// Return the number of emitted instructions for this function.
   uint32_t getNumNonPseudos() const {
