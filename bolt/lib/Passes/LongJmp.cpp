@@ -616,6 +616,23 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (BC.MIB->isPseudo(Inst))
         continue;
 
+      // DBG4: trace every instruction in GLOBAL__sub_I_llc for diagnosis
+      if (BC.isPPC64() &&
+          Func.getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
+        bool mns = mayNeedStub(BC, Inst);
+        bool ns = mns && needsStub(BB, Inst, DotAddress);
+        errs() << "BOLT PPC64 LongJmp DBG4: "
+               << Func.getPrintName()
+               << " opc=" << Inst.getOpcode()
+               << " isBranch=" << (BC.MIB->isBranch(Inst) ? "yes" : "no")
+               << " isCall=" << (BC.MIB->isCall(Inst) ? "yes" : "no")
+               << " isIndirect=" << (BC.MIB->isIndirectBranch(Inst) ? "yes" : "no")
+               << " mayNeedStub=" << (mns ? "yes" : "no")
+               << " needsStub=" << (ns ? "yes" : "no")
+               << " DotAddr=0x" << Twine::utohexstr(DotAddress)
+               << "\n";
+      }
+
       if (!mayNeedStub(BC, Inst)) {
         DotAddress += InsnSize;
         continue;
