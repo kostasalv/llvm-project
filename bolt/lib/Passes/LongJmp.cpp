@@ -396,9 +396,15 @@ LongJmpPass::tentativeLayoutRelocMode(const BinaryContext &BC,
     HotAddresses[Func] = DotAddress;
     LLVM_DEBUG(dbgs() << Func->getPrintName() << " tentative: "
                       << Twine::utohexstr(DotAddress) << "\n");
-    if (!Func->isSplit())
-      DotAddress += Func->estimateSize();
-    else
+    if (!Func->isSplit()) {
+      uint64_t SzEstimate = Func->estimateSize();
+      // PPC64 ELFv2: non-simple functions with no tracked BBs return 0 from
+      // estimateSize(), but they ARE emitted as raw bytes.  Reserve their real
+      // size so stubs placed after them don't collide with their output bytes.
+      if (BC.isPPC64() && !Func->isSimple() && SzEstimate == 0)
+        SzEstimate = Func->getMaxSize();
+      DotAddress += SzEstimate;
+    } else
       DotAddress += Func->estimateHotSize();
 
     if (uint64_t IslandSize = Func->estimateConstantIslandSize()) {
