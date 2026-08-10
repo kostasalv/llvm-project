@@ -731,6 +731,18 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       }
 
       // Create a stub to handle a far-away target
+      // PPC64: trace stub insertion near the crash address 0x1367f760
+      if (BC.isPPC64() && DotAddress >= 0x17800040 && DotAddress <= 0x17800080) {
+        const MCInst *LN = BB.getLastNonPseudoInstr();
+        errs() << "BOLT PPC64 LongJmp DBG5: stub insertion"
+               << " Func=" << Func.getPrintName()
+               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
+               << " BBaddr=0x" << Twine::utohexstr(DotAddress)
+               << " InsertionPoint=" << (&BB == InsertionPoint ? "same" : "other")
+               << " lastOpc=" << (LN ? (int)LN->getOpcode() : -1)
+               << " isCondBr=" << (LN && BC.MIB->isConditionalBranch(*LN) ? "yes" : "no")
+               << "\n";
+      }
       Insertions.emplace_back(InsertionPoint,
                               replaceTargetWithStub(BB, Inst, DotAddress,
                                                     InsertionPoint == Frontier
