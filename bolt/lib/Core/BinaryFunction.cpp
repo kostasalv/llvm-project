@@ -1518,19 +1518,14 @@ Error BinaryFunction::disassemble() {
       setIgnored();
 
     if (MIB->isBranch(Instruction) || MIB->isCall(Instruction)) {
-      // PPC64 debug: trace branch/call instructions in the problematic function
+      // PPC64 debug: trace all branches in the problematic function
       if (BC.TheTriple->isPPC64() &&
-          getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos &&
-          MIB->isConditionalBranch(Instruction)) {
-        uint64_t DbgTarget = 0;
-        bool DbgEval = MIB->evaluateBranch(Instruction, AbsoluteInstrAddr,
-                                           Size, DbgTarget);
-        errs() << "BOLT PPC64 disasm DBG: gBC at 0x"
+          getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
+        errs() << "BOLT PPC64 disasm DBG: branch/call at 0x"
                << Twine::utohexstr(AbsoluteInstrAddr)
                << " opc=" << Instruction.getOpcode()
-               << " evalOK=" << (DbgEval ? "yes" : "no")
-               << " target=0x" << Twine::utohexstr(DbgTarget)
-               << " inFunc=" << (containsAddress(DbgTarget) ? "yes" : "no")
+               << " isCondBr=" << (MIB->isConditionalBranch(Instruction) ? "yes" : "no")
+               << " isCall=" << (MIB->isCall(Instruction) ? "yes" : "no")
                << "\n";
       }
 
