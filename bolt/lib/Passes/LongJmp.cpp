@@ -199,7 +199,13 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
   const BinaryContext &BC = Func.getBinaryContext();
   std::unique_ptr<BinaryBasicBlock> NewBB;
   const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(Inst);
-  assert(TgtSym && "getTargetSymbol failed");
+  // PPC64: some instructions (e.g. BL to unsymbolized PLT stubs) may have no
+  // target symbol.  needsStub() already returns false for null TgtSym, so this
+  // path should not be reached — but guard defensively for release builds.
+  if (!TgtSym) {
+    if (BC.isPPC64()) return NewBB; // return empty unique_ptr, no stub created
+    assert(TgtSym && "getTargetSymbol failed");
+  }
 
   BinaryBasicBlock::BinaryBranchInfo BI{0, 0};
   BinaryBasicBlock *TgtBB = BB.getSuccessor(TgtSym, BI);
@@ -211,6 +217,7 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
     auto SSIter = SharedStubs.find(TgtSym);
     if (SSIter != SharedStubs.end()) {
       TgtSym = BC.MIB->getTargetSymbol(*SSIter->second->begin());
+      if (!TgtSym && BC.isPPC64()) return NewBB; // unsymbolized stub on PPC64
       --NumSharedStubs;
     }
   } else if (LocalStubsIter != Stubs.end() &&
@@ -219,6 +226,7 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
     // So, we are attempting to restore BB to its previous state without using
     // this stub.
     TgtSym = BC.MIB->getTargetSymbol(*TgtBB->begin());
+    if (!TgtSym && BC.isPPC64()) return NewBB; // unsymbolized stub on PPC64
     assert(TgtSym &&
            "First instruction is expected to contain a target symbol.");
     BinaryBasicBlock *TgtBBSucc = TgtBB->getSuccessor(TgtSym, BI);
