@@ -645,9 +645,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
 
   // Add necessary stubs for branch targets we know we can't fit in the
   // instruction
-  // PPC64: track BBs that need an explicit fallthrough branch before their stub.
-  std::vector<BinaryBasicBlock *> PPC64FallthroughFix;
-
   for (BinaryBasicBlock &BB : Func) {
     uint64_t DotAddress = BBAddresses[&BB];
     // Stubs themselves are relaxed on the next loop
@@ -726,89 +723,19 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: placing a call relay stub immediately after the calling BB
-      // can corrupt fall-through control flow in two ways:
-      //
-      // Case 1 – BB ends with a non-branch (e.g. ld r2,24(r1) TOC restore):
-      //   The fall-through physically executes the stub, re-invoking the call.
-      //   Fix: add an explicit unconditional branch to the BB so the fall-through
-      //   jumps over the stub to the real successor.  Deferred to avoid iterator
-      //   invalidation.
-      //
-      // Case 2 – BB ends with a conditional branch (e.g. beq):
-      //   When the branch is NOT taken, the fall-through lands in the stub,
-      //   re-invoking the call with whatever r3 the call just returned.
-      //   Fix: advance InsertionPoint past the fall-through successor BB so
-      //   the stub is placed after the fall-through BB, not between BB and it.
-      if (BC.isPPC64() && BC.MIB->isCall(Inst) &&
-          InsertionPoint == &BB) {
-        const MCInst *LastNonPseudo = BB.getLastNonPseudoInstr();
-        bool isCondBr = LastNonPseudo && BC.MIB->isConditionalBranch(*LastNonPseudo);
-        bool isUncondBr = LastNonPseudo && BC.MIB->isUnconditionalBranch(*LastNonPseudo);
-        bool isBranchLast = isCondBr || isUncondBr;
-        LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: call in BB size=" << BB.size()
-                          << " lastNonPseudo=" << (LastNonPseudo ? "yes" : "null")
-                          << " isBranchLast=" << (isBranchLast ? "yes" : "no")
-                          << " isCondBr=" << (isCondBr ? "yes" : "no")
-                          << " opc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
-                          << "\n");
-        errs() << "BOLT PPC64 LongJmp DBG: call in BB size=" << BB.size()
-               << " callOpc=" << (int)Inst.getOpcode()
-               << " isBranchLast=" << (isBranchLast ? "yes" : "no")
-               << " isCondBr=" << (isCondBr ? "yes" : "no")
-               << " isUncondBr=" << (isUncondBr ? "yes" : "no")
-               << " lastOpc=" << (LastNonPseudo ? (int)LastNonPseudo->getOpcode() : -1)
-               << " Func=" << Func.getPrintName()
-               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
-               << "\n";
-        if (isCondBr) {
-          // Case 2: BB ends with conditional branch (gBC/beq etc.).
-          // If stub is placed right after BB, the not-taken fall-through lands
-          // in the stub and re-invokes the call.
-          //
-          // Fix: advance InsertionPoint past ALL consecutive fall-through BBs
-          // that end with conditional branches, so the stub is placed after the
-          // last such BB.  This ensures no fall-through path reaches the stub.
-          BinaryBasicBlock *FT = BB.getFallthrough();
-          errs() << "BOLT PPC64 LongJmp DBG: isCondBr=yes FT=" << (FT ? "yes" : "null")
-                 << " BB.succ_size()=" << BB.succ_size() << "\n";
-          if (FT) {
-            errs() << "BOLT PPC64 LongJmp DBG: advancing InsertionPoint past FT\n";
-            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing stub past FT BB "
-                                 "to avoid cond-branch fall-through into stub\n");
-            InsertionPoint = FT;
-            // Keep advancing while the new InsertionPoint also ends with a
-            // conditional branch (its FT would otherwise land in the stub too).
-            while (true) {
-              const MCInst *FTLast = InsertionPoint->getLastNonPseudoInstr();
-              if (!FTLast || !BC.MIB->isConditionalBranch(*FTLast))
-                break;
-              BinaryBasicBlock *NextFT = InsertionPoint->getFallthrough();
-              if (!NextFT)
-                break;
-              InsertionPoint = NextFT;
-            }
-          }
-        } else if (!isBranchLast && BB.getFallthrough()) {
-          // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
-          errs() << "BOLT PPC64 LongJmp DBG: non-branch fallthrough fix\n";
-          PPC64FallthroughFix.push_back(&BB);
-        }
-      }
+      // PPC64 ELFv2: for call relay stubs, always place them at the end of the
+      // function regardless of whether the function is simple or not.  A call
+      // relay stub is only reached via a 'bl' instruction — it is NEVER
+      // fall-through reachable — so placing it anywhere inline between two BBs
+      // risks corrupting fall-through control flow (the not-taken path of a
+      // conditional branch preceding the stub would land in the stub and
+      // spuriously re-invoke the call with wrong arguments).
+      // Placing at the end is always safe: blr in the callee returns to the LR
+      // saved by 'bl stub', which points past the original call site.
+      if (BC.isPPC64() && BC.MIB->isCall(Inst))
+        InsertionPoint = &*std::prev(Func.end());
 
       // Create a stub to handle a far-away target
-      // PPC64: trace stub insertion near the crash address 0x1367f760
-      if (BC.isPPC64() && DotAddress >= 0x17800040 && DotAddress <= 0x17800080) {
-        const MCInst *LN = BB.getLastNonPseudoInstr();
-        errs() << "BOLT PPC64 LongJmp DBG5: stub insertion"
-               << " Func=" << Func.getPrintName()
-               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
-               << " BBaddr=0x" << Twine::utohexstr(DotAddress)
-               << " InsertionPoint=" << (&BB == InsertionPoint ? "same" : "other")
-               << " lastOpc=" << (LN ? (int)LN->getOpcode() : -1)
-               << " isCondBr=" << (LN && BC.MIB->isConditionalBranch(*LN) ? "yes" : "no")
-               << "\n";
-      }
       Insertions.emplace_back(InsertionPoint,
                               replaceTargetWithStub(BB, Inst, DotAddress,
                                                     InsertionPoint == Frontier
@@ -816,36 +743,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                                                         : DotAddress));
 
       DotAddress += InsnSize;
-    }
-  }
-
-  // PPC64: add explicit fallthrough branches to BBs that needed them.
-  // Done outside the instruction loop to avoid iterator invalidation.
-  //
-  // Case 1 (non-branch): BB ends with non-branch (e.g. ld r2,24(r1)), so
-  // fall-through physically enters the stub. Add b <FT> to make it skip over.
-  //
-  // Case 2 (conditional branch): BB ends with a conditional branch (gBC/beq).
-  // When the branch is NOT taken, fall-through enters the stub. Add b <FT>
-  // after the conditional branch to make the fall-through skip over the stub.
-  // This turns the BB into: gBC <taken-target>, b <FT>
-  // — exactly what BOLT does for reordered blocks anyway.
-  for (BinaryBasicBlock *BB : PPC64FallthroughFix) {
-    BinaryBasicBlock *FTSucc = BB->getFallthrough();
-    if (!FTSucc)
-      continue;
-    // Re-check: another iteration may have already added an unconditional
-    // branch (b <FT>) to this BB.
-    const MCInst *LastNonPseudo = BB->getLastNonPseudoInstr();
-    bool isUncondLast = LastNonPseudo &&
-                        BC.MIB->isUnconditionalBranch(*LastNonPseudo);
-    if (!isUncondLast) {
-      LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <fallthrough> "
-                           "to prevent stub fall-through\n");
-      MCInst BranchInst;
-      BC.MIB->createUncondBranch(BranchInst, FTSucc->getLabel(),
-                                 BC.Ctx.get());
-      BB->addInstruction(std::move(BranchInst));
     }
   }
 
