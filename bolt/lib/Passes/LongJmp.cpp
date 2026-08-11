@@ -724,16 +724,19 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
         InsertionPoint = &*std::prev(Func.end());
 
       // PPC64 ELFv2: for call relay stubs, always place them at the end of the
-      // function regardless of whether the function is simple or not.  A call
-      // relay stub is only reached via a 'bl' instruction — it is NEVER
-      // fall-through reachable — so placing it anywhere inline between two BBs
-      // risks corrupting fall-through control flow (the not-taken path of a
-      // conditional branch preceding the stub would land in the stub and
-      // spuriously re-invoke the call with wrong arguments).
-      // Placing at the end is always safe: blr in the callee returns to the LR
-      // saved by 'bl stub', which points past the original call site.
-      if (BC.isPPC64() && BC.MIB->isCall(Inst))
-        InsertionPoint = &*std::prev(Func.end());
+      // LAYOUT (physically last block in the output) regardless of whether the
+      // function is simple or not.  A call relay stub is only reached via a
+      // 'bl' instruction — it is NEVER fall-through reachable — so placing it
+      // anywhere inline between two BBs risks corrupting fall-through control
+      // flow.  Using the layout-last BB (not the list-last BB) ensures the stub
+      // ends up physically after all function code, even after block reordering.
+      if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
+        auto LayoutEnd = Func.getLayout().block_end();
+        if (LayoutEnd != Func.getLayout().block_begin())
+          InsertionPoint = *std::prev(LayoutEnd);
+        else
+          InsertionPoint = &*std::prev(Func.end());
+      }
 
       // Create a stub to handle a far-away target
       Insertions.emplace_back(InsertionPoint,
