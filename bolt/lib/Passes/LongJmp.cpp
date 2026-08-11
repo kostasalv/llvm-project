@@ -763,22 +763,20 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
                << "\n";
         if (isCondBr) {
           // Case 2: BB ends with conditional branch (gBC/beq etc.).
-          // The relay stub will be placed right after BB.  When the cond-branch
-          // is NOT taken, the CPU falls through to the stub and re-invokes the
-          // call with whatever r3 was returned.
+          // If stub is placed right after BB, the not-taken fall-through lands
+          // in the stub and re-invokes the call.
           //
-          // Fix: add an explicit unconditional branch to BB's fall-through
-          // successor AFTER the conditional branch.  This makes the fall-through
-          // jump past the stub to the real successor.  Deferred to avoid
-          // iterator invalidation.
+          // Fix: advance InsertionPoint to the fall-through successor BB so
+          // the stub is inserted AFTER FT, not between BB and FT.  This
+          // preserves the natural fall-through: BB→FT (stub follows FT).
           BinaryBasicBlock *FT = BB.getFallthrough();
           errs() << "BOLT PPC64 LongJmp DBG: isCondBr=yes FT=" << (FT ? "yes" : "null")
                  << " BB.succ_size()=" << BB.succ_size() << "\n";
           if (FT) {
-            errs() << "BOLT PPC64 LongJmp DBG: inserting b <FT> after cond-branch\n";
-            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: inserting b <FT> to prevent "
-                                 "stub fall-through after conditional branch\n");
-            PPC64FallthroughFix.push_back(&BB);
+            errs() << "BOLT PPC64 LongJmp DBG: advancing InsertionPoint past FT\n";
+            LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing stub past FT BB "
+                                 "to avoid cond-branch fall-through into stub\n");
+            InsertionPoint = FT;
           }
         } else if (!isBranchLast && BB.getFallthrough()) {
           // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
