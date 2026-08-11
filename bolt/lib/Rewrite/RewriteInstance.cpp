@@ -1354,6 +1354,14 @@ void RewriteInstance::discoverFileObjects() {
                                     SymbolSize);
       if (!IsSimple)
         BF->setSimple(false);
+      // PPC64 ELFv2: `.long_branch.` trampolines are compiler-generated
+      // range-extension stubs containing a single `b target` instruction with
+      // an R_PPC64_REL24 relocation.  If BOLT moves them to a new address the
+      // encoded displacement becomes wrong and exceeds the 26-bit ±32MB range,
+      // causing assembler errors.  Keep them at their original addresses by
+      // marking them ignored (non-simple → emitted as raw bytes in-place).
+      if (BC->isPPC64() && SymName.contains(".long_branch."))
+        BF->setIgnored();
       // PPC64 ELFv2: record the local entry offset from st_other so that
       // interprocedural references to func+localEntryOffset are not treated as
       // secondary entry points (they are the ABI local entry, not real entries).
@@ -3219,7 +3227,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
 
   // Diagnostic: log every new stub creation so we can see what names arrive.
   StringRef SymName = TargetSym.getName();
-  errs() << "BOLT-PPC64-STUB-CREATE: " << SymName << "\n";
 
   // Create an injected function for the stub.
   auto *StubBF = BC.createInjectedBinaryFunction(StubName, /*IsSimple=*/true);
@@ -3245,10 +3252,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
   bool IsPLTThunk = SymName.contains(".plt_call.") ||
                     SymName.contains(".plt_branch.");
 
-  errs() << "BOLT-PPC64-STUB-GUARD: IsPLTThunk=" << IsPLTThunk
-         << " TOCBase=" << Twine::utohexstr(BC.PPC64TOCBase)
-         << " sym=" << SymName << "\n";
-
   if (IsPLTThunk && ThunkAddress != 0) {
     // Compute the TOC base locally from .got — BC.PPC64TOCBase is set after
     // discoverFileObjects() but we run during processRelocations() inside it.
@@ -3257,10 +3260,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       LocalTOCBase = GOrErr->getAddress() + 0x8000;
 
     if (LocalTOCBase != 0) {
-    // Use the thunk address passed by the caller to read its raw bytes.
-    errs() << "BOLT-PPC64-STUB-LOOKUP: using ThunkAddress="
-           << Twine::utohexstr(ThunkAddress) << "\n";
-
     if (auto SecOrErr = BC.getSectionForAddress(ThunkAddress)) {
       const BinarySection &Sec = *SecOrErr;
       const uint8_t *Data = Sec.getData();
@@ -3296,8 +3295,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
 
       uint32_t W0 = readLE32(ThunkAddress);
       uint32_t W1 = readLE32(ThunkAddress + 4);
-      errs() << "BOLT-PPC64-STUB-LOOKUP: W0=" << Twine::utohexstr(W0)
-             << " W1=" << Twine::utohexstr(W1) << "\n";
 
       int64_t Offset = 0;
       bool FoundLD = false;
@@ -3311,11 +3308,6 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
       }
 
       if (FoundLD) {
-        errs() << "BOLT-PPC64: PLT thunk " << SymName
-               << ": toc=" << Twine::utohexstr(LocalTOCBase)
-               << " + offset=" << Offset
-               << " => using TOCThunk stub, thunk=0x"
-               << Twine::utohexstr(ThunkAddress) << "\n";
         PPCBuilder.buildCallStubTOCThunk(&Ctx, ThunkAddress, LocalTOCBase, Seq);
         for (auto &I : Seq)
           BB->addInstruction(I);
@@ -3335,13 +3327,13 @@ static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
         return StubBF;
       }
 
-      errs() << "BOLT-PPC64: PLT thunk " << SymName
-             << ": could not find ld r12,offset(r2) in first 8 bytes"
-             << " (W0=" << Twine::utohexstr(W0)
-             << " W1=" << Twine::utohexstr(W1) << ") -- falling back\n";
+      LLVM_DEBUG(dbgs() << "BOLT-PPC64: PLT thunk " << SymName
+                        << ": could not find ld r12,offset(r2) in first 8 bytes"
+                        << " (W0=" << Twine::utohexstr(W0)
+                        << " W1=" << Twine::utohexstr(W1) << ") -- falling back\n");
     } else {
-      errs() << "BOLT-PPC64-STUB-LOOKUP: getSectionForAddress("
-             << Twine::utohexstr(ThunkAddress) << ") failed\n";
+      LLVM_DEBUG(dbgs() << "BOLT-PPC64-STUB-LOOKUP: getSectionForAddress("
+                        << Twine::utohexstr(ThunkAddress) << ") failed\n");
     }
     } // if (LocalTOCBase != 0)
   }
