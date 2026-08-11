@@ -777,16 +777,18 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
        Insertions) {
     if (!Elmt.second)
       continue;
-    // DBG8: trace actual insertBasicBlocks call for Z41/1
-    if (BC.isPPC64() &&
-        Func.getPrintName().find("_Z41__static_init") != std::string::npos &&
-        Func.getPrintName().find("/1(") != std::string::npos) {
-      errs() << "BOLT PPC64 LongJmp DBG8: insertBasicBlocks"
-             << " Func=" << Func.getPrintName()
-             << " IPaddr=0x" << Twine::utohexstr(BBAddresses[Elmt.first])
-             << " IPindex=" << Elmt.first->getIndex()
-             << " totalBBs=" << Func.size()
-             << "\n";
+    // DBG8: trace insertBasicBlocks calls where InsertionPoint is in hot BBAddr
+    // range 0x17800040..0x178000f0 (which maps to the 0x1367f760 region)
+    if (BC.isPPC64() && BBAddresses.count(Elmt.first)) {
+      uint64_t IP = BBAddresses[Elmt.first];
+      if (IP >= 0x17800040 && IP <= 0x178000f0) {
+        errs() << "BOLT PPC64 LongJmp DBG8: insertBasicBlocks"
+               << " Func=" << Func.getPrintName()
+               << " IPaddr=0x" << Twine::utohexstr(IP)
+               << " IPindex=" << Elmt.first->getIndex()
+               << " totalBBs=" << Func.size()
+               << "\n";
+      }
     }
     std::vector<std::unique_ptr<BinaryBasicBlock>> NewBBs;
     NewBBs.emplace_back(std::move(Elmt.second));
