@@ -766,9 +766,9 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
           // If stub is placed right after BB, the not-taken fall-through lands
           // in the stub and re-invokes the call.
           //
-          // Fix: advance InsertionPoint to the fall-through successor BB so
-          // the stub is inserted AFTER FT, not between BB and FT.  This
-          // preserves the natural fall-through: BB→FT (stub follows FT).
+          // Fix: advance InsertionPoint past ALL consecutive fall-through BBs
+          // that end with conditional branches, so the stub is placed after the
+          // last such BB.  This ensures no fall-through path reaches the stub.
           BinaryBasicBlock *FT = BB.getFallthrough();
           errs() << "BOLT PPC64 LongJmp DBG: isCondBr=yes FT=" << (FT ? "yes" : "null")
                  << " BB.succ_size()=" << BB.succ_size() << "\n";
@@ -777,6 +777,17 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
             LLVM_DEBUG(dbgs() << "BOLT PPC64 LongJmp: advancing stub past FT BB "
                                  "to avoid cond-branch fall-through into stub\n");
             InsertionPoint = FT;
+            // Keep advancing while the new InsertionPoint also ends with a
+            // conditional branch (its FT would otherwise land in the stub too).
+            while (true) {
+              const MCInst *FTLast = InsertionPoint->getLastNonPseudoInstr();
+              if (!FTLast || !BC.MIB->isConditionalBranch(*FTLast))
+                break;
+              BinaryBasicBlock *NextFT = InsertionPoint->getFallthrough();
+              if (!NextFT)
+                break;
+              InsertionPoint = NextFT;
+            }
           }
         } else if (!isBranchLast && BB.getFallthrough()) {
           // Case 1: BB ends with non-branch.  Mark for deferred explicit branch.
