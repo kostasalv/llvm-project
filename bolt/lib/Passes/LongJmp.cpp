@@ -768,6 +768,17 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
        Insertions) {
     if (!Elmt.second)
       continue;
+    // DBG8: trace actual insertBasicBlocks call for Z41/1
+    if (BC.isPPC64() &&
+        Func.getPrintName().find("_Z41__static_init") != std::string::npos &&
+        Func.getPrintName().find("/1(") != std::string::npos) {
+      errs() << "BOLT PPC64 LongJmp DBG8: insertBasicBlocks"
+             << " Func=" << Func.getPrintName()
+             << " IPaddr=0x" << Twine::utohexstr(BBAddresses[Elmt.first])
+             << " IPindex=" << Elmt.first->getIndex()
+             << " totalBBs=" << Func.size()
+             << "\n";
+    }
     std::vector<std::unique_ptr<BinaryBasicBlock>> NewBBs;
     NewBBs.emplace_back(std::move(Elmt.second));
     Func.insertBasicBlocks(Elmt.first, std::move(NewBBs), true);
