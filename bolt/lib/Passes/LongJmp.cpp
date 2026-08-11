@@ -112,15 +112,10 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
 
   Stubs[&Func].insert(StubBB.get());
   StubBits[StubBB.get()] = BC.MIB->getUncondBranchEncodingSize();
-  // DBG9: trace NEW stub creation near 0x17800040-0x17800080 region
-  if (BC.isPPC64() && AtAddress >= 0x17800000 && AtAddress <= 0x17810000) {
-    errs() << "BOLT PPC64 LongJmp DBG9: createNewStub"
-           << " Func=" << Func.getPrintName()
-           << " AtAddress=0x" << Twine::utohexstr(AtAddress)
-           << " IsCold=" << (IsCold ? "yes" : "no")
-           << " TgtSym=" << TgtSym->getName()
-           << "\n";
-  }
+  // Immediately register the stub's tentative address so that lookupStub
+  // calls within the same relax() iteration (e.g. a second call in the same
+  // function) can range-check against a valid address rather than UB.
+  BBAddresses[StubBB.get()] = AtAddress;
   if (IsCold) {
     registerInMap(ColdLocalStubs[&Func]);
     if (opts::GroupStubs && TgtIsFunc)
@@ -641,14 +636,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
 
   BinaryBasicBlock *Frontier = getBBAtHotColdSplitPoint(Func);
   uint64_t FrontierAddress = Frontier ? BBAddresses[Frontier] : 0;
-  if (BC.isPPC64() &&
-      (Func.getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos ||
-       Func.getPrintName().find("_Z41__static_init") != std::string::npos))
-    errs() << "BOLT PPC64 LongJmp DBG3: relax() entered for "
-           << Func.getPrintName()
-           << " isSimple=" << (Func.isSimple() ? "yes" : "no")
-           << " numBBs=" << Func.size()
-           << " addr=0x" << Twine::utohexstr(Func.getAddress()) << "\n";
   if (FrontierAddress)
     FrontierAddress += Frontier->getNumNonPseudos() * InsnSize;
 
@@ -663,23 +650,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
     for (MCInst &Inst : BB) {
       if (BC.MIB->isPseudo(Inst))
         continue;
-
-      // DBG4: trace every instruction in GLOBAL__sub_I_llc for diagnosis
-      if (BC.isPPC64() &&
-          Func.getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
-        bool mns = mayNeedStub(BC, Inst);
-        bool ns = mns && needsStub(BB, Inst, DotAddress);
-        errs() << "BOLT PPC64 LongJmp DBG4: "
-               << Func.getPrintName()
-               << " opc=" << Inst.getOpcode()
-               << " isBranch=" << (BC.MIB->isBranch(Inst) ? "yes" : "no")
-               << " isCall=" << (BC.MIB->isCall(Inst) ? "yes" : "no")
-               << " isIndirect=" << (BC.MIB->isIndirectBranch(Inst) ? "yes" : "no")
-               << " mayNeedStub=" << (mns ? "yes" : "no")
-               << " needsStub=" << (ns ? "yes" : "no")
-               << " DotAddr=0x" << Twine::utohexstr(DotAddress)
-               << "\n";
-      }
 
       if (!mayNeedStub(BC, Inst)) {
         DotAddress += InsnSize;
@@ -697,25 +667,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       // hot path if a branch, since this branch target is the cold region
       // (but first check that the far away stub will be in range).
       BinaryBasicBlock *InsertionPoint = &BB;
-      if (BC.isPPC64() && BC.MIB->isCall(Inst))
-        errs() << "BOLT PPC64 LongJmp DBG2: call stub needed in "
-               << Func.getPrintName()
-               << " isSimple=" << (Func.isSimple() ? "yes" : "no") << "\n";
-      // DBG6: trace ALL stubs where DotAddress is in the large cold region
-      // to identify which function object produces the crash stub
-      if (BC.isPPC64() && DotAddress >= 0x177f0000 && DotAddress <= 0x17810000) {
-        const MCInst *LN = BB.getLastNonPseudoInstr();
-        errs() << "BOLT PPC64 LongJmp DBG6: stub in cold region"
-               << " Func=" << Func.getPrintName()
-               << " isSimple=" << (Func.isSimple() ? "yes" : "no")
-               << " numBBs=" << Func.size()
-               << " BBaddr=0x" << Twine::utohexstr(DotAddress)
-               << " callOpc=" << Inst.getOpcode()
-               << " isCall=" << (BC.MIB->isCall(Inst) ? "yes" : "no")
-               << " lastOpc=" << (LN ? (int)LN->getOpcode() : -1)
-               << " isCondBr=" << (LN && BC.MIB->isConditionalBranch(*LN) ? "yes" : "no")
-               << "\n";
-      }
       if (Func.isSimple() && !BC.MIB->isCall(Inst) && FrontierAddress &&
           !BB.isCold()) {
         int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
@@ -732,24 +683,19 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: for call relay stubs, place them at the physically last
-      // block in the layout to avoid fall-through corruption from block reordering.
+      // PPC64 ELFv2: for call relay stubs, always place them at the
+      // layout-last block (physically last in the output after block
+      // reordering).  Call stubs are only reached via 'bl' — they are
+      // NEVER fall-through reachable — so placing them inline between BBs
+      // corrupts fall-through control flow when a conditional branch
+      // precedes the stub.  Using getLayout().block_end()-1 ensures the
+      // stub ends up physically after all function code even when block
+      // reordering moves the internal-list last BB to a non-terminal position.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
         auto LayoutEnd = Func.getLayout().block_end();
-        if (LayoutEnd != Func.getLayout().block_begin()) {
+        if (LayoutEnd != Func.getLayout().block_begin())
           InsertionPoint = *std::prev(LayoutEnd);
-          // DBG7: trace InsertionPoint for calls when near the 0x1367f760 region
-          // The stub at 0x1367f760 (final) comes from some function's InsertionPoint
-          // near tentative 0x17800040..0x17800060.  Find it.
-          uint64_t IPtentative = BBAddresses[InsertionPoint];
-          if (BC.isPPC64() && IPtentative >= 0x17800040 && IPtentative <= 0x17800080) {
-            errs() << "BOLT PPC64 LongJmp DBG7: CANDIDATE stub creator"
-                   << " Func=" << Func.getPrintName()
-                   << " IPaddr=0x" << Twine::utohexstr(IPtentative)
-                   << " numBBs=" << Func.size()
-                   << "\n";
-          }
-        } else
+        else
           InsertionPoint = &*std::prev(Func.end());
       }
 
@@ -777,18 +723,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
        Insertions) {
     if (!Elmt.second)
       continue;
-    // DBG8: trace ALL insertBasicBlocks for _Z41/1 to find which BB is InsertionPoint
-    if (BC.isPPC64() &&
-        Func.getPrintName().find("_Z41__static_init") != std::string::npos &&
-        Func.getPrintName().find("/1(") != std::string::npos &&
-        BBAddresses.count(Elmt.first)) {
-      errs() << "BOLT PPC64 LongJmp DBG8: insertBasicBlocks"
-             << " Func=" << Func.getPrintName()
-             << " IPaddr=0x" << Twine::utohexstr(BBAddresses[Elmt.first])
-             << " IPindex=" << Elmt.first->getIndex()
-             << " totalBBs=" << Func.size()
-             << "\n";
-    }
     std::vector<std::unique_ptr<BinaryBasicBlock>> NewBBs;
     NewBBs.emplace_back(std::move(Elmt.second));
     Func.insertBasicBlocks(Elmt.first, std::move(NewBBs), true);

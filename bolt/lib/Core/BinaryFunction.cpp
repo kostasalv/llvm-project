@@ -1518,17 +1518,6 @@ Error BinaryFunction::disassemble() {
       setIgnored();
 
     if (MIB->isBranch(Instruction) || MIB->isCall(Instruction)) {
-      // PPC64 debug: trace all branches in the problematic function
-      if (BC.TheTriple->isPPC64() &&
-          (getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos ||
-           getPrintName().find("_Z41__static_init") != std::string::npos) &&
-          MIB->isConditionalBranch(Instruction)) {
-        errs() << "BOLT PPC64 disasm DBG: condBr at 0x"
-               << Twine::utohexstr(AbsoluteInstrAddr)
-               << " opc=" << Instruction.getOpcode()
-               << " func=" << getPrintName() << "\n";
-      }
-
       uint64_t TargetAddress = 0;
       if (MIB->evaluateBranch(Instruction, AbsoluteInstrAddr, Size,
                               TargetAddress)) {
@@ -2563,11 +2552,6 @@ Error BinaryFunction::buildCFG(MCPlusBuilder::AllocatorIdTy AllocatorId) {
   }
 
   if (BasicBlocks.empty()) {
-    if (BC.isPPC64() &&
-        getPrintName().find("_Z41__static_init") != std::string::npos &&
-        getPrintName().find("/1(") != std::string::npos)
-      BC.errs() << "BOLT PPC64 DBG buildCFG: BasicBlocks empty for "
-                << getPrintName() << "\n";
     setSimple(false);
     return createNonFatalBOLTError("");
   }
@@ -3461,13 +3445,6 @@ void BinaryFunction::setTrapOnEntry() {
 
 void BinaryFunction::setIgnored() {
   IsIgnored = true;
-  // PPC64 diagnostic: print stack when _Z41__static_init is ignored
-  if (BC.isPPC64() &&
-      getPrintName().find("_Z41__static_init") != std::string::npos &&
-      getPrintName().find("/1(") != std::string::npos) {
-    BC.errs() << "BOLT PPC64 DBG setIgnored: " << getPrintName()
-              << " CurrentState=" << (int)CurrentState << "\n";
-  }
 
   if (opts::processAllFunctions()) {
     // We can accept ignored functions before they've been disassembled.
@@ -3981,14 +3958,6 @@ void BinaryFunction::postProcessBranches() {
 
 MCSymbol *BinaryFunction::addEntryPointAtOffset(uint64_t Offset) {
   assert(Offset && "cannot add primary entry point");
-  // PPC64 diagnostic: trace who registers secondary entry on _Z41__static_init
-  if (BC.isPPC64() &&
-      getPrintName().find("_Z41__static_init") != std::string::npos &&
-      getPrintName().find("/1(") != std::string::npos) {
-    BC.errs() << "BOLT PPC64 DBG addEntryPointAtOffset: " << getPrintName()
-              << " offset=0x" << Twine::utohexstr(Offset)
-              << " CurrentState=" << (int)CurrentState << "\n";
-  }
 
   const uint64_t EntryPointAddress = getAddress() + Offset;
   assert(!isInConstantIsland(EntryPointAddress) &&
