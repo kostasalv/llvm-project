@@ -549,9 +549,12 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
     return Error::success();
   }
 
-  // The long jmp uses absolute address on AArch64 and PPC64.
-  // So we could not use it for PIC binaries.
-  if ((BC.isAArch64() || BC.isPPC64()) && !BC.HasFixedLoadAddress)
+  // The long jmp uses absolute address on AArch64.
+  // AArch64 PIC cannot embed absolute addresses in code stubs.
+  // PPC64 ELFv2: createLongJmp() emits a 7-instruction CTR-dispatch sequence
+  // (lis/ori/sldi/oris/ori r12, mtctr, bctr) using @highest/@higher/@hi/@lo
+  // symbol references resolved by JITLink — fully PIC-compatible.
+  if (BC.isAArch64() && !BC.HasFixedLoadAddress)
     return createFatalBOLTError(
         "BOLT-ERROR: Unable to relax stub for PIC binary\n");
 

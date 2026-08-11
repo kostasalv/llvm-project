@@ -1402,6 +1402,19 @@ public:
 
   virtual bool isTOCRestoreAfterCall(const MCInst &Inst) const { return false; }
 
+  /// Return true if \p Inst is a call that already encodes a post-call NOP
+  /// slot (e.g. PPC64 BL8_NOP family). These are 8 bytes and must not have
+  /// an additional NOP injected or implied. Default false for non-PPC64.
+  virtual bool isCallWithNOPSlot(const MCInst &Inst) const { return false; }
+
+  /// PPC64 ELFv2: if \p Inst is a plain BL8 call with no embedded NOP slot,
+  /// upgrade it to BL8_NOP in-place (8 bytes = bl + nop) so the encoding
+  /// carries a NOP slot JITLink can rewrite to a TOC-restore, and so that
+  /// computeCodeSize() correctly accounts for the 8-byte encoding in the
+  /// tentative layout. Returns true if the instruction was modified.
+  /// Default no-op for non-PPC64 targets.
+  virtual bool ensureCallNOPSlot(MCInst &Inst) const { return false; }
+
   /// Return true if \p Instruction is an indirect branch that dispatches a
   /// PIC jump table on PPC64 ELFv2 (bctr preceded by mtctr and lwax).
   /// Used during disassembly to mark the jump table data as a constant island
