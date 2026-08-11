@@ -723,14 +723,24 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: skip BOLT inline stub insertion for call instructions.
-      // JITLink handles range extension for calls via $__STUBS entries placed
-      // in a dedicated section — they never corrupt fall-through control flow.
-      // BOLT inline call stubs can land inside function code between conditional
-      // branches, causing spurious re-invocations with wrong register state.
+      // PPC64 ELFv2: for call relay stubs, place them at the physically last
+      // block in the layout to avoid fall-through corruption from block reordering.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
-        DotAddress += InsnSize;
-        continue;
+        auto LayoutEnd = Func.getLayout().block_end();
+        if (LayoutEnd != Func.getLayout().block_begin()) {
+          InsertionPoint = *std::prev(LayoutEnd);
+          // DBG: trace InsertionPoint for _Z41 and GLOBAL__sub_I_llc
+          if (Func.getPrintName().find("_Z41__static_init") != std::string::npos ||
+              Func.getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
+            errs() << "BOLT PPC64 LongJmp DBG7: call stub InsertionPoint"
+                   << " Func=" << Func.getPrintName()
+                   << " IPaddr=0x" << Twine::utohexstr(BBAddresses[InsertionPoint])
+                   << " IPisLast=" << (InsertionPoint == &*std::prev(Func.end()) ? "listlast" : "layoutlast")
+                   << " numBBs=" << Func.size()
+                   << "\n";
+          }
+        } else
+          InsertionPoint = &*std::prev(Func.end());
       }
 
       // Create a stub to handle a far-away target
