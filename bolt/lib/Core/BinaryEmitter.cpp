@@ -537,41 +537,6 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
                         << "\n");
 
       Streamer.emitInstruction(Instr, *BC.STI);
-
-      // PPC64 ELFv2: after a call, ensure the post-call slot contains either
-      // the original TOC-restore (ld r2,24(r1)) or a NOP placeholder.
-      //
-      // - If the next instruction is already a TOC-restore or a NOP, do not
-      //   inject anything — the slot is already correct.
-      // - BL8_NOP variants already encode an 8-byte bl+nop, skip those too.
-      // - Otherwise inject a NOP so JITLink can rewrite it to a TOC-restore
-      //   for external calls via CallBranchDeltaRestoreTOC.
-      //
-      // Note: we intentionally do NOT skip existing TOC-restore instructions.
-      // The JITLink pass ppc64DowngradeRestoreTOCIfNoNOP demotes
-      // CallBranchDeltaRestoreTOC edges to CallBranchDelta when call+4 is not
-      // a NOP, leaving the original TOC-restore untouched.
-      // PPC64 ELFv2: ensure a post-call NOP slot exists for every call that
-      // needs one, so JITLink can rewrite it to a TOC-restore for external
-      // calls via CallBranchDeltaRestoreTOC.
-      //
-      // BL8_NOP variants already encode bl+nop (8 bytes) — no action needed.
-      // If a BL8 is followed by a real TOC-restore or NOP the slot is filled.
-      // Otherwise we upgrade BL8 → BL8_NOP in-place via ensureCallNOPSlot().
-      // Mutating the MCInst in the BB means computeCodeSize() will correctly
-      // return 8 bytes for BL8_NOP on all subsequent tentative layout passes,
-      // keeping LongJmpPass range checks accurate and avoiding assembler
-      // 'branch target out of range' errors from size under-estimation.
-      if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
-        if (!BC.MIB->isCallWithNOPSlot(Instr)) {
-          auto NextI = std::next(I);
-          bool SlotFilled = NextI != E &&
-                            (BC.MIB->isNoop(*NextI) ||
-                             BC.MIB->isTOCRestoreAfterCall(*NextI));
-          if (!SlotFilled)
-            BC.MIB->ensureCallNOPSlot(Instr);
-        }
-      }
     }
   }
 

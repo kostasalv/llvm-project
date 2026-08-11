@@ -2698,6 +2698,35 @@ void BinaryFunction::postProcessCFG() {
 
     // Eliminate inconsistencies between branch instructions and CFG.
     postProcessBranches();
+
+    // PPC64 ELFv2: upgrade BL8 → BL8_NOP for every plain call that lacks a
+    // post-call NOP slot.  BL8_NOP encodes as 8 bytes (bl + nop), so
+    // computeCodeSize() correctly returns 8 for subsequent tentative layout
+    // passes used by LongJmpPass.  Without this, LongJmpPass underestimates
+    // function sizes by 4 bytes per plain BL8 call, causing internal branches
+    // to appear in-range during tentative layout but exceed the 26-bit ±32MB
+    // limit in the final assembled output.
+    //
+    // The NOP slot is also needed by JITLink's CallBranchDeltaRestoreTOC edge:
+    // JITLink's ppc64DowngradeRestoreTOCIfNoNOP pass demotes edges whose
+    // call+4 slot already contains a real TOC-restore to CallBranchDelta,
+    // leaving those slots untouched.  For calls without a slot the NOP is
+    // rewritten to ld r2,24(r1) for external (cross-DSO) calls.
+    if (BC.isPPC64()) {
+      for (BinaryBasicBlock &BB : blocks()) {
+        for (auto It = BB.begin(); It != BB.end(); ++It) {
+          MCInst &Inst = *It;
+          if (!BC.MIB->isCall(Inst) || BC.MIB->isCallWithNOPSlot(Inst))
+            continue;
+          auto Next = std::next(It);
+          bool SlotFilled = Next != BB.end() &&
+                            (BC.MIB->isNoop(*Next) ||
+                             BC.MIB->isTOCRestoreAfterCall(*Next));
+          if (!SlotFilled)
+            BC.MIB->ensureCallNOPSlot(Inst);
+        }
+      }
+    }
   }
 
   // The final cleanup of intermediate structures.
