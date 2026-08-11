@@ -723,19 +723,14 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: for call relay stubs, always place them at the end of the
-      // LAYOUT (physically last block in the output) regardless of whether the
-      // function is simple or not.  A call relay stub is only reached via a
-      // 'bl' instruction — it is NEVER fall-through reachable — so placing it
-      // anywhere inline between two BBs risks corrupting fall-through control
-      // flow.  Using the layout-last BB (not the list-last BB) ensures the stub
-      // ends up physically after all function code, even after block reordering.
+      // PPC64 ELFv2: skip BOLT inline stub insertion for call instructions.
+      // JITLink handles range extension for calls via $__STUBS entries placed
+      // in a dedicated section — they never corrupt fall-through control flow.
+      // BOLT inline call stubs can land inside function code between conditional
+      // branches, causing spurious re-invocations with wrong register state.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
-        auto LayoutEnd = Func.getLayout().block_end();
-        if (LayoutEnd != Func.getLayout().block_begin())
-          InsertionPoint = *std::prev(LayoutEnd);
-        else
-          InsertionPoint = &*std::prev(Func.end());
+        DotAddress += InsnSize;
+        continue;
       }
 
       // Create a stub to handle a far-away target
