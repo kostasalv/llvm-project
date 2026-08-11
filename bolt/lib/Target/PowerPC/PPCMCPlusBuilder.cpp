@@ -389,6 +389,20 @@ bool PPCMCPlusBuilder::isCallWithNOPSlot(const MCInst &I) const {
   }
 }
 
+bool PPCMCPlusBuilder::ensureCallNOPSlot(MCInst &Inst) const {
+  // Upgrade a plain BL8 (4 bytes) to BL8_NOP (8 bytes = bl + nop) so that:
+  //  1. The assembler emits a NOP slot JITLink can rewrite to a TOC-restore
+  //     for external calls via CallBranchDeltaRestoreTOC.
+  //  2. computeCodeSize() correctly accounts for the 8-byte encoding in the
+  //     tentative layout, keeping LongJmpPass range checks accurate.
+  // BL8_NOP takes the same single operand (target symbol) as BL8.
+  if (Inst.getOpcode() == PPC::BL8) {
+    Inst.setOpcode(PPC::BL8_NOP);
+    return true;
+  }
+  return false;
+}
+
 bool PPCMCPlusBuilder::isIndirectCall(const MCInst &I) const {
   switch (I.getOpcode()) {
   case PPC::BCTRL:
