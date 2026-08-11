@@ -699,6 +699,52 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
           InsertionPoint = &*std::prev(Func.end());
       }
 
+      // PPC64 ELFv2: for non-call unconditional branches (e.g. the single
+      // `b target` in an ELFv2 global-entry trampoline BB), also snap to
+      // the last block of the source BB's fragment when placing a stub
+      // immediately after InsertionPoint (== &BB) would corrupt a
+      // fall-through edge from a *different* BB into the next layout block.
+      //
+      // Example: after block reordering the trampoline BB sits between
+      // BB1 (which ends with a conditional branch whose not-taken path
+      // falls through to BB2) and BB2.  Inserting a stub after the
+      // trampoline BB puts it between BB1's fall-through and BB2,
+      // causing spurious execution of the relay stub.
+      //
+      // Conditional branches (BCC/BC, 16-bit range) are NOT snapped here —
+      // their stubs must remain close to the source BB (within ±32KB).
+      if (BC.isPPC64() && !BC.MIB->isCall(Inst) &&
+          !BC.MIB->isConditionalBranch(Inst)) {
+        auto LayoutBegin = Func.getLayout().block_begin();
+        auto LayoutEnd   = Func.getLayout().block_end();
+        if (LayoutBegin != LayoutEnd) {
+          // Find InsertionPoint in layout order and look at what comes next.
+          for (auto It = LayoutBegin; It != LayoutEnd; ++It) {
+            if (*It != InsertionPoint)
+              continue;
+            auto Next = std::next(It);
+            if (Next == LayoutEnd)
+              break; // already last — no issue
+            BinaryBasicBlock *NextBB = *Next;
+            // If any predecessor of NextBB (other than BB itself) has
+            // NextBB as its fall-through, inserting a stub here breaks
+            // that edge.  Snap to the last block of BB's fragment.
+            for (BinaryBasicBlock *Pred : NextBB->predecessors()) {
+              if (Pred == &BB)
+                continue;
+              if (Pred->getFallthrough() == NextBB) {
+                FunctionFragment const &Frag =
+                    Func.getLayout().getFragment(BB.getFragmentNum());
+                if (!Frag.empty())
+                  InsertionPoint = Frag.back();
+                break;
+              }
+            }
+            break;
+          }
+        }
+      }
+
       // Create a stub to handle a far-away target
       Insertions.emplace_back(InsertionPoint,
                               replaceTargetWithStub(BB, Inst, DotAddress,
