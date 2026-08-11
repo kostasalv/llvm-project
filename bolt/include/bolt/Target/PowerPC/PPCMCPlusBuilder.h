@@ -112,7 +112,9 @@ public:
   /// Return true if \p Inst is a call instruction that already encodes a NOP
   /// slot in its encoding (e.g. BL8_NOP = bl + nop as a single MCInst).
   /// These must NOT have an additional NOP injected after them.
-  bool isCallWithNOPSlot(const MCInst &Inst) const;
+  bool isCallWithNOPSlot(const MCInst &Inst) const override;
+
+  bool ensureCallNOPSlot(MCInst &Inst) const override;
 
   // Build a PPC64 call-stub as MCInsts; the stub tail-calls Target via CTR.
   // Out will receive: [std r2,24(r1)] (optional), address materialization into
