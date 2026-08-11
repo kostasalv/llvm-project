@@ -729,13 +729,14 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
         auto LayoutEnd = Func.getLayout().block_end();
         if (LayoutEnd != Func.getLayout().block_begin()) {
           InsertionPoint = *std::prev(LayoutEnd);
-          // DBG: trace InsertionPoint for _Z41 and GLOBAL__sub_I_llc
-          if (Func.getPrintName().find("_Z41__static_init") != std::string::npos ||
-              Func.getPrintName().find("GLOBAL__sub_I_llc") != std::string::npos) {
-            errs() << "BOLT PPC64 LongJmp DBG7: call stub InsertionPoint"
+          // DBG7: trace InsertionPoint for calls when near the 0x1367f760 region
+          // The stub at 0x1367f760 (final) comes from some function's InsertionPoint
+          // near tentative 0x17800040..0x17800060.  Find it.
+          uint64_t IPtentative = BBAddresses[InsertionPoint];
+          if (BC.isPPC64() && IPtentative >= 0x17800040 && IPtentative <= 0x17800080) {
+            errs() << "BOLT PPC64 LongJmp DBG7: CANDIDATE stub creator"
                    << " Func=" << Func.getPrintName()
-                   << " IPaddr=0x" << Twine::utohexstr(BBAddresses[InsertionPoint])
-                   << " IPisLast=" << (InsertionPoint == &*std::prev(Func.end()) ? "listlast" : "layoutlast")
+                   << " IPaddr=0x" << Twine::utohexstr(IPtentative)
                    << " numBBs=" << Func.size()
                    << "\n";
           }
