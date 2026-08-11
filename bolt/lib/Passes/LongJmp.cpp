@@ -112,6 +112,15 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
 
   Stubs[&Func].insert(StubBB.get());
   StubBits[StubBB.get()] = BC.MIB->getUncondBranchEncodingSize();
+  // DBG9: trace NEW stub creation near 0x17800040-0x17800080 region
+  if (BC.isPPC64() && AtAddress >= 0x17800000 && AtAddress <= 0x17810000) {
+    errs() << "BOLT PPC64 LongJmp DBG9: createNewStub"
+           << " Func=" << Func.getPrintName()
+           << " AtAddress=0x" << Twine::utohexstr(AtAddress)
+           << " IsCold=" << (IsCold ? "yes" : "no")
+           << " TgtSym=" << TgtSym->getName()
+           << "\n";
+  }
   if (IsCold) {
     registerInMap(ColdLocalStubs[&Func]);
     if (opts::GroupStubs && TgtIsFunc)
