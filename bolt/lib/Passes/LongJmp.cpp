@@ -530,13 +530,6 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
   uint64_t PCRelTgtAddress = DotAddress > TgtAddress ? DotAddress - TgtAddress
                                                      : TgtAddress - DotAddress;
 
-  // PPC64 diagnostic: trace every stub that is out of 26-bit range so we can
-  // verify the post-convergence pass is reaching them with correct addresses.
-  if (BC.isPPC64() && (PCRelTgtAddress & SingleInstrMask))
-    BC.errs() << "BOLT PPC64 relaxStub2: stub=" << Twine::utohexstr(DotAddress)
-              << " tgt=" << Twine::utohexstr(TgtAddress)
-              << " dist=" << PCRelTgtAddress << " Bits=" << Bits << "\n";
-
   // If it fits in one instruction, do not relax
   if (!(PCRelTgtAddress & SingleInstrMask))
     return Error::success();
@@ -611,16 +604,16 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
     }
   }
 
-  // PPC64 ELFv2: for non-call unconditional branches (tail-calls / trampolines)
-  // targeting a non-simple function that will be emitted as raw bytes, skip
-  // BOLT inline stub insertion.  The raw-byte function's layout is not tracked
-  // in BOLT's BB map, so a BOLT stub placed after the calling BB can land in
-  // the middle of the target function's cold output, corrupting it.
-  // JITLink will handle the range extension via $__STUBS instead.
+  // PPC64 ELFv2: for non-call unconditional branches (tail-calls) targeting a
+  // non-simple function, only skip stub insertion when that function is NOT
+  // ignored (i.e. it will be relocated to a new address by BOLT, so placing
+  // an inline stub after the calling BB could corrupt its raw-byte output).
+  // If the target function IS ignored, it stays at its original fixed address
+  // and we must create a stub because the distance to it may exceed ±32MB.
   if (BC.isPPC64() && !BC.MIB->isCall(Inst) && !TgtBB) {
     uint64_t EntryID = 0;
     const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
-    if (TargetFunc && !TargetFunc->isSimple())
+    if (TargetFunc && !TargetFunc->isSimple() && !TargetFunc->isIgnored())
       return false;
   }
 
