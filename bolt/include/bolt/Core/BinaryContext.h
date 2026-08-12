@@ -1038,10 +1038,29 @@ public:
   /// Return a value of the global \p Symbol or an error if the value
   /// was not set.
   ErrorOr<uint64_t> getSymbolValue(const MCSymbol &Symbol) const {
+    // 1. Standard global BinaryData lookup (the normal path for all symbols).
     const BinaryData *BD = getBinaryDataByName(Symbol.getName());
-    if (!BD)
-      return std::make_error_code(std::errc::bad_address);
-    return BD->getAddress();
+    if (BD)
+      return BD->getAddress();
+
+    // 2. PPC64 ELFv2: BOLT synthesises FUNCat0xADDR symbols for branch targets
+    // it could not fully symbolize (e.g. functions with unsupported instruction
+    // patterns whose BinaryData entry was never inserted in GlobalSymbols, or
+    // that were entered under a different address key than their MCSymbol name).
+    // Fall through to BinaryDataMap lookup by address parsed from the name.
+    if (HasRelocations && Symbol.getName().starts_with("FUNCat0x")) {
+      uint64_t Addr = 0;
+      if (!Symbol.getName().drop_front(8).getAsInteger(16, Addr)) {
+        auto It = BinaryDataMap.find(Addr);
+        if (It != BinaryDataMap.end())
+          return It->second->getAddress();
+        // Address not in BinaryDataMap — the symbol encodes the address
+        // directly in its name; return it as the resolved value.
+        return Addr;
+      }
+    }
+
+    return std::make_error_code(std::errc::bad_address);
   }
 
   /// Return a global symbol registered at a given \p Address and \p Size.

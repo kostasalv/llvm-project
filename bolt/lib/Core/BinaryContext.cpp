@@ -899,6 +899,17 @@ MCSymbol *BinaryContext::getOrCreateGlobalSymbol(uint64_t Address, Twine Prefix,
   auto Itr = BinaryDataMap.find(Address);
   if (Itr != BinaryDataMap.end()) {
     assert(Itr->second->getSize() == Size || !Size);
+    // If a BinaryData already exists at this address but the requested
+    // Prefix-named symbol is not yet in GlobalSymbols, register the alias
+    // so that getSymbolValue() can look it up by the synthetic name.
+    // This matters for PPC64 FUNCat0xADDR symbols: if a BinaryFunction was
+    // already registered at the address, the returned symbol is the function's
+    // own symbol, but the FUNCat0x name is never inserted in GlobalSymbols.
+    // Downstream getSymbolValue() calls then fail (returns bad_address) and
+    // in Release builds the assert is a no-op, causing UB.
+    std::string Name = (Prefix + "0x" + Twine::utohexstr(Address)).str();
+    if (!GlobalSymbols.count(Name))
+      GlobalSymbols[Name] = Itr->second;
     return Itr->second->getSymbol();
   }
 
