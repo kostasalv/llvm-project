@@ -1153,31 +1153,6 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
       for (BinaryBasicBlock *BB : Func->getLayout().blocks()) {
         if (!BB->isValid() || !Stubs[Func].count(BB))
           continue;
-        // Dump stub contents before relaxation so we can see the exact opcodes
-        // of any stub that is still out of 26-bit range at this point.
-        {
-          const int Bits = StubBits[BB];
-          if (Bits != static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8)) {
-            const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(*BB->begin());
-            uint64_t DotAddr = BBAddresses[BB];
-            if (TgtSym) {
-              const BinaryBasicBlock *TgtBB = Func->getBasicBlockForLabel(TgtSym);
-              uint64_t TgtAddr = getSymbolAddress(BC, TgtSym, TgtBB);
-              int64_t Disp = (int64_t)(TgtAddr - DotAddr);
-              constexpr int64_t Lim = (1LL << 25);
-              if (Disp < -Lim || Disp > Lim - 4) {
-                BC.errs() << "BOLT PPC64 STUB-DUMP: func=" << Func->getPrintName()
-                          << " stub=" << Twine::utohexstr(DotAddr)
-                          << " tgt=" << Twine::utohexstr(TgtAddr)
-                          << " disp=" << Disp << " Bits=" << Bits
-                          << " #insns=" << BB->size() << "\n";
-                for (const MCInst &I : *BB)
-                  BC.errs() << "  opc=" << BC.MII->getName(I.getOpcode())
-                            << " numOps=" << I.getNumOperands() << "\n";
-              }
-            }
-          }
-        }
         if (auto E = relaxStub(*BB, StubsRelaxed))
           return Error(std::move(E));
       }
