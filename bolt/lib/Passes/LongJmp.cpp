@@ -686,20 +686,27 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (!Func.isSimple())
         InsertionPoint = &*std::prev(Func.end());
 
-      // PPC64 ELFv2: for call relay stubs, always place them at the
-      // layout-last block (physically last in the output after block
-      // reordering).  Call stubs are only reached via 'bl' — they are
-      // NEVER fall-through reachable — so placing them inline between BBs
-      // corrupts fall-through control flow when a conditional branch
-      // precedes the stub.  Using getLayout().block_end()-1 ensures the
-      // stub ends up physically after all function code even when block
-      // reordering moves the internal-list last BB to a non-terminal position.
+      // PPC64 ELFv2: for call relay stubs, place them at the hot-cold
+      // boundary (Frontier) when the function is split, or at the last hot
+      // layout block when it is not split.  Call stubs are only reached via
+      // 'bl' — NEVER fall-through reachable — so they are safe to append at
+      // any position.  Using Frontier keeps relay stubs physically at the end
+      // of the hot section, before cold code, which keeps them within ±32MB
+      // of the original .plt_branch./.long_branch. trampolines that stay at
+      // their original addresses (ignored by BOLT).  layout-last (cold-end)
+      // was pushing stubs >32MB away and causing assembler range errors.
       if (BC.isPPC64() && BC.MIB->isCall(Inst)) {
-        auto LayoutEnd = Func.getLayout().block_end();
-        if (LayoutEnd != Func.getLayout().block_begin())
-          InsertionPoint = *std::prev(LayoutEnd);
-        else
-          InsertionPoint = &*std::prev(Func.end());
+        if (Frontier) {
+          // Split function: place at the last hot block (= Frontier).
+          InsertionPoint = Frontier;
+        } else {
+          // Unsplit function: place at the last block in layout order.
+          auto LayoutEnd = Func.getLayout().block_end();
+          if (LayoutEnd != Func.getLayout().block_begin())
+            InsertionPoint = *std::prev(LayoutEnd);
+          else
+            InsertionPoint = &*std::prev(Func.end());
+        }
       }
 
       // PPC64 ELFv2: for non-call unconditional branches (e.g. the single
