@@ -1103,19 +1103,28 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
   // converges.  Stubs created in the last iteration have BBAddresses set to
   // the hot source BB address (not their actual cold-section placement).
   // After the loop ends, tentativeLayout() assigns the correct cold addresses.
-  // The extra relaxStub() pass then detects any stubs that are now >32MB from
-  // their targets and upgrades them to long-jump sequences.  No new stubs are
-  // created here (only existing stubs are relaxed), so the loop stays bounded.
+  // The extra relaxStub() pass detects any stubs that are now >32MB from
+  // their targets and upgrades them to long-jump sequences.
+  //
+  // Crucially, we MUST walk blocks in layout order (Func->getLayout().blocks())
+  // rather than the internal list (*Func), because tentativeBBLayout() assigns
+  // BBAddresses based on the sequential layout order.  Walking the internal
+  // list (which has arbitrary pointer/index order) can visit stubs whose
+  // BBAddresses entry hasn't been updated yet, making relaxStub() see stale
+  // (hot-section) distances and skip the long-jump conversion.
+  //
+  // No new stubs are created here — only existing stubs are relaxed — so the
+  // pass is strictly bounded and cannot re-trigger the main loop.
   if (BC.isPPC64()) {
     tentativeLayout(BC, Sorted);
     updateStubGroups();
     bool StubsRelaxed = false;
     for (BinaryFunction *Func : Sorted) {
-      // Only run the stub relaxation sub-loop (skip the stub creation loop).
-      for (BinaryBasicBlock &BB : *Func) {
-        if (!Stubs[Func].count(&BB) || !BB.isValid())
+      // Walk in physical layout order so BBAddresses[BB] is accurate.
+      for (BinaryBasicBlock *BB : Func->getLayout().blocks()) {
+        if (!BB->isValid() || !Stubs[Func].count(BB))
           continue;
-        if (auto E = relaxStub(BB, StubsRelaxed))
+        if (auto E = relaxStub(*BB, StubsRelaxed))
           return Error(std::move(E));
       }
       if (StubsRelaxed && Func->isSimple())
