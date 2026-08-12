@@ -653,6 +653,12 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   int64_t MinVal = -(1ULL << BitsAvail);
 
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
+  // PPC64 diagnostic: flag unresolved FUNCat symbols so we can confirm the
+  // fix is working.  Remove once confirmed.
+  if (BC.isPPC64() && TgtSym->getName().starts_with("FUNCat0x") &&
+      PCRelTgtAddress == 0)
+    BC.errs() << "BOLT PPC64 UNRESOLVED-FUNCAT: sym=" << TgtSym->getName()
+              << " dot=" << Twine::utohexstr(DotAddress) << "\n";
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
   return PCOffset < MinVal || PCOffset > MaxVal;
