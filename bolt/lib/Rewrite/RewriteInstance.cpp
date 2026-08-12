@@ -1364,6 +1364,17 @@ void RewriteInstance::discoverFileObjects() {
       if (BC->isPPC64() && (SymName.contains(".long_branch.") ||
                             SymName.contains(".plt_branch.")))
         BF->setIgnored();
+      // PPC64 ELFv2: non-simple functions (those BOLT cannot fully disassemble
+      // or rewrite, e.g. functions with unsupported instructions or jump tables
+      // BOLT doesn't control) contain raw `b`/`bl` instructions with
+      // R_PPC64_REL24 displacements encoded relative to their original address.
+      // When BOLT relocates a non-simple function to a new address in relocation
+      // mode, the stale displacement causes 'branch target out of range' errors
+      // at assembly time.  Mark all non-simple PPC64 functions as ignored so
+      // they are emitted as raw bytes at their original addresses and their
+      // encoded displacements remain correct.
+      if (BC->isPPC64() && !IsSimple)
+        BF->setIgnored();
       // PPC64 ELFv2: record the local entry offset from st_other so that
       // interprocedural references to func+localEntryOffset are not treated as
       // secondary entry points (they are the ABI local entry, not real entries).
