@@ -4384,6 +4384,16 @@ void RewriteInstance::postProcessFunctions() {
     if (Function.hasDynamicRelocationAtIsland())
       Function.setSimple(false);
 
+    // PPC64 ELFv2: non-simple functions are emitted as raw bytes.  In
+    // relocation mode BOLT moves them to new addresses, but their internal
+    // b/bl instructions encode R_PPC64_REL24 displacements relative to the
+    // original address.  At the new address those displacements are stale
+    // and produce 'branch target out of range' assembler errors.  Mark
+    // non-simple PPC64 functions as ignored so they are emitted at their
+    // original addresses and their encoded displacements remain correct.
+    if (BC->isPPC64() && !Function.isSimple() && !Function.isIgnored())
+      Function.setIgnored();
+
     if (Function.empty())
       continue;
 
