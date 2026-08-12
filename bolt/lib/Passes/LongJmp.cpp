@@ -90,11 +90,36 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   const bool IsCold = SourceBB.isCold();
   MCSymbol *StubSym = BC.Ctx->createNamedTempSymbol("Stub");
   std::unique_ptr<BinaryBasicBlock> StubBB = Func.createBasicBlock(StubSym);
-  MCInst Inst;
-  BC.MIB->createUncondBranch(Inst, TgtSym, BC.Ctx.get());
-  if (TgtIsFunc)
-    BC.MIB->convertJmpToTailCall(Inst);
-  StubBB->addInstruction(Inst);
+
+  // PPC64 ELFv2: stubs targeting ignored functions (fixed original addresses)
+  // must use the full 7-instruction long-jump sequence.  Ignored functions
+  // stay at their original addresses; after BOLT relocates the text section
+  // the distance to them can exceed ±32MB.  Using a long-jump here avoids the
+  // convergence race: a single-instruction 'b target' stub created in the
+  // final LongJmpPass iteration has BBAddresses set to the hot source address
+  // (stale), so relaxStub() sees it as within range and skips conversion.
+  // By constructing the long-jump immediately, we bypass relaxStub() entirely
+  // (StubBits is set to 64) and guarantee correct assembly regardless of where
+  // the stub ends up in the final layout.
+  bool UseLongJmp = false;
+  if (BC.isPPC64() && TgtIsFunc) {
+    uint64_t EntryID = 0;
+    const BinaryFunction *TgtFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+    if (TgtFunc && TgtFunc->isIgnored())
+      UseLongJmp = true;
+  }
+
+  if (UseLongJmp) {
+    InstructionListType Seq;
+    BC.MIB->createLongJmp(Seq, TgtSym, BC.Ctx.get(), /*IsTailCall=*/true);
+    StubBB->addInstructions(Seq.begin(), Seq.end());
+  } else {
+    MCInst Inst;
+    BC.MIB->createUncondBranch(Inst, TgtSym, BC.Ctx.get());
+    if (TgtIsFunc)
+      BC.MIB->convertJmpToTailCall(Inst);
+    StubBB->addInstruction(Inst);
+  }
   StubBB->setExecutionCount(0);
 
   // Register this in stubs maps
@@ -111,7 +136,11 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   };
 
   Stubs[&Func].insert(StubBB.get());
-  StubBits[StubBB.get()] = BC.MIB->getUncondBranchEncodingSize();
+  // Long-jump stubs are already at maximum encoding; set StubBits to 64 so
+  // relaxStub() skips them (early return at the Bits==64 check).
+  StubBits[StubBB.get()] = UseLongJmp
+      ? static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8)
+      : BC.MIB->getUncondBranchEncodingSize();
   // Immediately register the stub's tentative address so that lookupStub
   // calls within the same relax() iteration (e.g. a second call in the same
   // function) can range-check against a valid address rather than UB.
