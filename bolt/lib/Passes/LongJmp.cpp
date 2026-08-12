@@ -532,7 +532,20 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
     // Look at BinaryContext's resolution for this symbol - this is a symbol not
     // mapped to a BinaryFunction
     ErrorOr<uint64_t> ValueOrError = BC.getSymbolValue(*Target);
-    assert(ValueOrError && "Unrecognized symbol");
+    // PPC64 ELFv2: BOLT synthesises FUNCat0xADDR symbols for functions it
+    // could not fully symbolize.  These may not appear in BinaryData.  In a
+    // release build the assert below is a no-op and *ValueOrError invokes UB,
+    // returning junk that makes range checks skip stub creation.  Instead,
+    // return a sentinel that is guaranteed to appear far away (>32MB) so
+    // needsStub() always creates a stub and relaxStub() always emits a
+    // long-jump for such unresolvable targets.  On other targets the symbol
+    // must be resolvable, so keep the assert.
+    if (!ValueOrError) {
+      if (BC.isPPC64())
+        return std::numeric_limits<uint64_t>::max() / 2;
+      assert(false && "Unrecognized symbol");
+      return 0;
+    }
     return *ValueOrError;
   }
   return Iter->second;
