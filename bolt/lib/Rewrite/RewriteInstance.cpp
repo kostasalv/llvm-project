@@ -1354,13 +1354,15 @@ void RewriteInstance::discoverFileObjects() {
                                     SymbolSize);
       if (!IsSimple)
         BF->setSimple(false);
-      // PPC64 ELFv2: `.long_branch.` trampolines are compiler-generated
-      // range-extension stubs containing a single `b target` instruction with
-      // an R_PPC64_REL24 relocation.  If BOLT moves them to a new address the
-      // encoded displacement becomes wrong and exceeds the 26-bit ±32MB range,
-      // causing assembler errors.  Keep them at their original addresses by
-      // marking them ignored (non-simple → emitted as raw bytes in-place).
-      if (BC->isPPC64() && SymName.contains(".long_branch."))
+      // PPC64 ELFv2: `.long_branch.` and `.plt_branch.` trampolines are
+      // linker-generated range-extension stubs containing a single
+      // `b target` instruction with an R_PPC64_REL24 relocation.  If BOLT
+      // moves them to a new address the encoded displacement becomes wrong
+      // and exceeds the 26-bit ±32MB range, causing assembler errors.  Keep
+      // them at their original addresses by marking them ignored (non-simple
+      // → emitted as raw bytes in-place).
+      if (BC->isPPC64() && (SymName.contains(".long_branch.") ||
+                            SymName.contains(".plt_branch.")))
         BF->setIgnored();
       // PPC64 ELFv2: record the local entry offset from st_other so that
       // interprocedural references to func+localEntryOffset are not treated as
