@@ -91,23 +91,21 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   MCSymbol *StubSym = BC.Ctx->createNamedTempSymbol("Stub");
   std::unique_ptr<BinaryBasicBlock> StubBB = Func.createBasicBlock(StubSym);
 
-  // PPC64 ELFv2: stubs targeting ignored functions (fixed original addresses)
-  // must use the full 7-instruction long-jump sequence.  Ignored functions
-  // stay at their original addresses; after BOLT relocates the text section
-  // the distance to them can exceed ±32MB.  Using a long-jump here avoids the
-  // convergence race: a single-instruction 'b target' stub created in the
-  // final LongJmpPass iteration has BBAddresses set to the hot source address
-  // (stale), so relaxStub() sees it as within range and skips conversion.
-  // By constructing the long-jump immediately, we bypass relaxStub() entirely
-  // (StubBits is set to 64) and guarantee correct assembly regardless of where
-  // the stub ends up in the final layout.
-  bool UseLongJmp = false;
-  if (BC.isPPC64() && TgtIsFunc) {
-    uint64_t EntryID = 0;
-    const BinaryFunction *TgtFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
-    if (TgtFunc && TgtFunc->isIgnored())
-      UseLongJmp = true;
-  }
+  // PPC64 ELFv2: ALL external-function stubs (TgtIsFunc=true) use the full
+  // 7-instruction long-jump (lis/ori/rldicr/oris/ori r12, mtctr, bctr).
+  // Reasons:
+  // 1. After BOLT reorders and relocates functions, any two hot functions
+  //    can end up >32MB apart in the new text section. A single 'b target'
+  //    (26-bit ±32MB) stub created in the final LongJmpPass iteration has
+  //    BBAddresses set to the hot SOURCE address (stale), so relaxStub()
+  //    sees it as within range and skips long-jump conversion.  At JITLink
+  //    time the CallBranchDelta fixup finds the true 34MB displacement and
+  //    rejects it with "out of range".
+  // 2. 'bctr' is an indirect branch with no range restriction — it always
+  //    works regardless of where the stub ends up in the final layout.
+  // 3. StubBits is set to 64 so relaxStub() is a no-op for these stubs.
+  // The cost is 28 bytes per stub instead of 4 bytes.
+  bool UseLongJmp = BC.isPPC64() && TgtIsFunc;
 
   if (UseLongJmp) {
     InstructionListType Seq;
