@@ -813,6 +813,33 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
     Func.insertBasicBlocks(Elmt.first, std::move(NewBBs), true);
   }
 
+  // PPC64 diagnostic: after all stubs are inserted and stubs relaxed,
+  // walk the layout in order and flag any branch that is still out of ±32MB.
+  if (BC.isPPC64()) {
+    constexpr int64_t Limit = (1LL << 25); // 32MB (26-bit signed)
+    for (BinaryBasicBlock *BB : Func.getLayout().blocks()) {
+      uint64_t SrcAddr = BBAddresses[BB];
+      for (MCInst &Inst : *BB) {
+        if (BC.MIB->isPseudo(Inst)) continue;
+        if (!BC.MIB->isBranch(Inst) && !BC.MIB->isCall(Inst)) continue;
+        const MCSymbol *Sym = BC.MIB->getTargetSymbol(Inst);
+        if (!Sym) continue;
+        const BinaryBasicBlock *TgtBB = Func.getBasicBlockForLabel(Sym);
+        uint64_t TgtAddr = getSymbolAddress(BC, Sym, TgtBB);
+        int64_t Disp = (int64_t)(TgtAddr - SrcAddr);
+        if (Disp >= -Limit && Disp <= Limit - 4) continue;
+        BC.errs() << "BOLT PPC64 RANGE-DIAG: func=" << Func.getPrintName()
+                  << " opc=" << BC.MII->getName(Inst.getOpcode())
+                  << " isCall=" << BC.MIB->isCall(Inst)
+                  << " inStubs=" << (Stubs[&Func].count(BB) ? "YES" : "NO")
+                  << " src=" << Twine::utohexstr(SrcAddr)
+                  << " tgt=" << Twine::utohexstr(TgtAddr)
+                  << " disp=" << Disp
+                  << " sym=" << Sym->getName() << "\n";
+      }
+    }
+  }
+
   return Error::success();
 }
 
