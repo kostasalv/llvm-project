@@ -532,16 +532,7 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
     // Look at BinaryContext's resolution for this symbol - this is a symbol not
     // mapped to a BinaryFunction
     ErrorOr<uint64_t> ValueOrError = BC.getSymbolValue(*Target);
-    // PPC64 ELFv2: BOLT synthesises FUNCat0xADDR symbols for functions it
-    // could not fully symbolize (e.g. unsupported instruction patterns).
-    // These symbols have no entry in the symbol value map.  Return 0 so the
-    // caller's range check treats the distance as unknown/large, triggering
-    // long-jump conversion if appropriate.  On other targets keep the existing
-    // assert to catch genuine programming errors.
-    if (!ValueOrError) {
-      assert(BC.isPPC64() && "Unrecognized symbol on non-PPC64 target");
-      return 0;
-    }
+    assert(ValueOrError && "Unrecognized symbol");
     return *ValueOrError;
   }
   return Iter->second;
