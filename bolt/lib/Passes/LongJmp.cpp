@@ -530,6 +530,18 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
   uint64_t PCRelTgtAddress = DotAddress > TgtAddress ? DotAddress - TgtAddress
                                                      : TgtAddress - DotAddress;
 
+  // PPC64: trace stubs that are at the 26-bit boundary to understand why
+  // relaxStub does or doesn't trigger long-jump relaxation.
+  if (BC.isPPC64() && (PCRelTgtAddress & SingleInstrMask) &&
+      RealTargetSym && RealTargetSym->getName().contains("plt")) {
+    BC.errs() << "BOLT PPC64 relaxStub TRACE: stub="
+              << Twine::utohexstr(DotAddress)
+              << " tgt=" << Twine::utohexstr(TgtAddress)
+              << " dist=" << PCRelTgtAddress
+              << " Bits=" << Bits
+              << " sym=" << RealTargetSym->getName() << "\n";
+  }
+
   // If it fits in one instruction, do not relax
   if (!(PCRelTgtAddress & SingleInstrMask))
     return Error::success();
