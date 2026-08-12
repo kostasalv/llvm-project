@@ -1098,6 +1098,33 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
         Func->fixBranches();
     }
   } while (Modified);
+
+  // PPC64 ELFv2: run one final relaxation-only pass after the main loop
+  // converges.  Stubs created in the last iteration have BBAddresses set to
+  // the hot source BB address (not their actual cold-section placement).
+  // After the loop ends, tentativeLayout() assigns the correct cold addresses.
+  // The extra relaxStub() pass then detects any stubs that are now >32MB from
+  // their targets and upgrades them to long-jump sequences.  No new stubs are
+  // created here (only existing stubs are relaxed), so the loop stays bounded.
+  if (BC.isPPC64()) {
+    tentativeLayout(BC, Sorted);
+    updateStubGroups();
+    bool StubsRelaxed = false;
+    for (BinaryFunction *Func : Sorted) {
+      // Only run the stub relaxation sub-loop (skip the stub creation loop).
+      for (BinaryBasicBlock &BB : *Func) {
+        if (!Stubs[Func].count(&BB) || !BB.isValid())
+          continue;
+        if (auto E = relaxStub(BB, StubsRelaxed))
+          return Error(std::move(E));
+      }
+      if (StubsRelaxed && Func->isSimple())
+        Func->fixBranches();
+    }
+    if (StubsRelaxed)
+      ++Iterations;
+  }
+
   BC.outs() << "BOLT-INFO: Inserted " << NumHotStubs
             << " stubs in the hot area and " << NumColdStubs
             << " stubs in the cold area. Shared " << NumSharedStubs
