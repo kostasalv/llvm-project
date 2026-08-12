@@ -661,6 +661,21 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
               << " dot=" << Twine::utohexstr(DotAddress) << "\n";
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
+  // PPC64 diagnostic: log when needsStub returns FALSE for a branch that is
+  // actually out of range — these are the instructions that slip past stub
+  // creation and reach the assembler as-is.
+  if (BC.isPPC64() && !TgtBB) {
+    constexpr int64_t Limit = (1LL << 25);
+    int64_t RealOffset = (int64_t)(PCRelTgtAddress - DotAddress);
+    bool OutOfRange = RealOffset < -Limit || RealOffset > Limit - 4;
+    bool WillStub  = PCOffset < MinVal || PCOffset > MaxVal;
+    if (OutOfRange && !WillStub)
+      BC.errs() << "BOLT PPC64 MISSED-STUB: sym=" << TgtSym->getName()
+                << " dot=" << Twine::utohexstr(DotAddress)
+                << " tgt=" << Twine::utohexstr(PCRelTgtAddress)
+                << " offset=" << RealOffset << "\n";
+  }
+
   return PCOffset < MinVal || PCOffset > MaxVal;
 }
 
