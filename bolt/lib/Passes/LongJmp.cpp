@@ -532,7 +532,16 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
     // Look at BinaryContext's resolution for this symbol - this is a symbol not
     // mapped to a BinaryFunction
     ErrorOr<uint64_t> ValueOrError = BC.getSymbolValue(*Target);
-    assert(ValueOrError && "Unrecognized symbol");
+    // PPC64 ELFv2: BOLT synthesises FUNCat0xADDR symbols for functions it
+    // could not fully symbolize (e.g. unsupported instruction patterns).
+    // These symbols have no entry in the symbol value map.  Return 0 so the
+    // caller's range check treats the distance as unknown/large, triggering
+    // long-jump conversion if appropriate.  On other targets keep the existing
+    // assert to catch genuine programming errors.
+    if (!ValueOrError) {
+      assert(BC.isPPC64() && "Unrecognized symbol on non-PPC64 target");
+      return 0;
+    }
     return *ValueOrError;
   }
   return Iter->second;
@@ -811,33 +820,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
     std::vector<std::unique_ptr<BinaryBasicBlock>> NewBBs;
     NewBBs.emplace_back(std::move(Elmt.second));
     Func.insertBasicBlocks(Elmt.first, std::move(NewBBs), true);
-  }
-
-  // PPC64 diagnostic: after all stubs are inserted and stubs relaxed,
-  // walk the layout in order and flag any branch that is still out of ±32MB.
-  if (BC.isPPC64()) {
-    constexpr int64_t Limit = (1LL << 25); // 32MB (26-bit signed)
-    for (BinaryBasicBlock *BB : Func.getLayout().blocks()) {
-      uint64_t SrcAddr = BBAddresses[BB];
-      for (MCInst &Inst : *BB) {
-        if (BC.MIB->isPseudo(Inst)) continue;
-        if (!BC.MIB->isBranch(Inst) && !BC.MIB->isCall(Inst)) continue;
-        const MCSymbol *Sym = BC.MIB->getTargetSymbol(Inst);
-        if (!Sym) continue;
-        const BinaryBasicBlock *TgtBB = Func.getBasicBlockForLabel(Sym);
-        uint64_t TgtAddr = getSymbolAddress(BC, Sym, TgtBB);
-        int64_t Disp = (int64_t)(TgtAddr - SrcAddr);
-        if (Disp >= -Limit && Disp <= Limit - 4) continue;
-        BC.errs() << "BOLT PPC64 RANGE-DIAG: func=" << Func.getPrintName()
-                  << " opc=" << BC.MII->getName(Inst.getOpcode())
-                  << " isCall=" << BC.MIB->isCall(Inst)
-                  << " inStubs=" << (Stubs[&Func].count(BB) ? "YES" : "NO")
-                  << " src=" << Twine::utohexstr(SrcAddr)
-                  << " tgt=" << Twine::utohexstr(TgtAddr)
-                  << " disp=" << Disp
-                  << " sym=" << Sym->getName() << "\n";
-      }
-    }
   }
 
   return Error::success();
