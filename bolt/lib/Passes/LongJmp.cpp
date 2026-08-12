@@ -1172,20 +1172,30 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
   if (BC.isPPC64()) {
     tentativeLayout(BC, Sorted);
     updateStubGroups();
-    bool StubsRelaxed = false;
-    for (BinaryFunction *Func : Sorted) {
-      // Walk in physical layout order so BBAddresses[BB] is accurate.
-      for (BinaryBasicBlock *BB : Func->getLayout().blocks()) {
-        if (!BB->isValid() || !Stubs[Func].count(BB))
-          continue;
-        if (auto E = relaxStub(*BB, StubsRelaxed))
-          return Error(std::move(E));
+    // Repeat the post-convergence relaxation until no more stubs need to be
+    // upgraded.  Each round of long-jump conversions grows stub sizes by 24
+    // bytes (4→28), shifting the tentative layout and potentially pushing
+    // previously-borderline stubs over the ±32MB limit.  We iterate until
+    // stable, each time recomputing the layout to get accurate BBAddresses.
+    bool StubsRelaxed;
+    do {
+      tentativeLayout(BC, Sorted);
+      updateStubGroups();
+      StubsRelaxed = false;
+      for (BinaryFunction *Func : Sorted) {
+        // Walk in physical layout order so BBAddresses[BB] is accurate.
+        for (BinaryBasicBlock *BB : Func->getLayout().blocks()) {
+          if (!BB->isValid() || !Stubs[Func].count(BB))
+            continue;
+          if (auto E = relaxStub(*BB, StubsRelaxed))
+            return Error(std::move(E));
+        }
+        if (StubsRelaxed && Func->isSimple())
+          Func->fixBranches();
       }
-      if (StubsRelaxed && Func->isSimple())
-        Func->fixBranches();
-    }
-    if (StubsRelaxed)
-      ++Iterations;
+      if (StubsRelaxed)
+        ++Iterations;
+    } while (StubsRelaxed);
   }
 
   BC.outs() << "BOLT-INFO: Inserted " << NumHotStubs
