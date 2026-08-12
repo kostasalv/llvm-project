@@ -1354,15 +1354,16 @@ void RewriteInstance::discoverFileObjects() {
                                     SymbolSize);
       if (!IsSimple)
         BF->setSimple(false);
-      // PPC64 ELFv2: `.long_branch.` and `.plt_branch.` trampolines are
-      // linker-generated range-extension stubs containing a single
-      // `b target` instruction with an R_PPC64_REL24 relocation.  If BOLT
-      // moves them to a new address the encoded displacement becomes wrong
-      // and exceeds the 26-bit ±32MB range, causing assembler errors.  Keep
-      // them at their original addresses by marking them ignored (non-simple
-      // → emitted as raw bytes in-place).
+      // PPC64 ELFv2: `.long_branch.`, `.plt_branch.`, and `.plt_call.`
+      // trampolines are linker-generated range-extension stubs containing a
+      // single `b`/`bl` instruction with an R_PPC64_REL24 relocation.  If
+      // BOLT moves them to a new address the encoded displacement becomes
+      // wrong and exceeds the 26-bit ±32MB range, causing JITLink
+      // CallBranchDelta fixup errors.  Keep them at their original addresses
+      // by marking them ignored (non-simple → emitted as raw bytes in-place).
       if (BC->isPPC64() && (SymName.contains(".long_branch.") ||
-                            SymName.contains(".plt_branch.")))
+                            SymName.contains(".plt_branch.") ||
+                            SymName.contains(".plt_call.")))
         BF->setIgnored();
       // PPC64 ELFv2: non-simple functions (those BOLT cannot fully disassemble
       // or rewrite, e.g. functions with unsupported instructions or jump tables
