@@ -591,6 +591,10 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
                     << Twine::utohexstr(PCRelTgtAddress)
                     << " RealTargetSym = " << RealTargetSym->getName() << "\n");
   relaxStubToLongJmp(StubBB, RealTargetSym);
+  if (BC.isPPC64())
+    BC.errs() << "BOLT PPC64 LONG-JUMP: sym=" << RealTargetSym->getName()
+              << " stub=" << Twine::utohexstr(DotAddress)
+              << " tgt=" << Twine::utohexstr(TgtAddress) << "\n";
   StubBits[&StubBB] = static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8);
   Modified = true;
   return Error::success();
