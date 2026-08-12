@@ -591,10 +591,6 @@ Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
                     << Twine::utohexstr(PCRelTgtAddress)
                     << " RealTargetSym = " << RealTargetSym->getName() << "\n");
   relaxStubToLongJmp(StubBB, RealTargetSym);
-  if (BC.isPPC64())
-    BC.errs() << "BOLT PPC64 LONG-JUMP: sym=" << RealTargetSym->getName()
-              << " stub=" << Twine::utohexstr(DotAddress)
-              << " tgt=" << Twine::utohexstr(TgtAddress) << "\n";
   StubBits[&StubBB] = static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8);
   Modified = true;
   return Error::success();
@@ -657,28 +653,7 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   int64_t MinVal = -(1ULL << BitsAvail);
 
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
-  // PPC64 diagnostic: flag unresolved FUNCat symbols so we can confirm the
-  // fix is working.  Remove once confirmed.
-  if (BC.isPPC64() && TgtSym->getName().starts_with("FUNCat0x") &&
-      PCRelTgtAddress == 0)
-    BC.errs() << "BOLT PPC64 UNRESOLVED-FUNCAT: sym=" << TgtSym->getName()
-              << " dot=" << Twine::utohexstr(DotAddress) << "\n";
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
-
-  // PPC64 diagnostic: log when needsStub returns FALSE for a branch that is
-  // actually out of range — these are the instructions that slip past stub
-  // creation and reach the assembler as-is.
-  if (BC.isPPC64() && !TgtBB) {
-    constexpr int64_t Limit = (1LL << 25);
-    int64_t RealOffset = (int64_t)(PCRelTgtAddress - DotAddress);
-    bool OutOfRange = RealOffset < -Limit || RealOffset > Limit - 4;
-    bool WillStub  = PCOffset < MinVal || PCOffset > MaxVal;
-    if (OutOfRange && !WillStub)
-      BC.errs() << "BOLT PPC64 MISSED-STUB: sym=" << TgtSym->getName()
-                << " dot=" << Twine::utohexstr(DotAddress)
-                << " tgt=" << Twine::utohexstr(PCRelTgtAddress)
-                << " offset=" << RealOffset << "\n";
-  }
 
   return PCOffset < MinVal || PCOffset > MaxVal;
 }
