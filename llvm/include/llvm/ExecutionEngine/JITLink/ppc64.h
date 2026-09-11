@@ -445,28 +445,6 @@ inline Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
                                                        (Value & 0x03fffffc));
     if (K == CallBranchDeltaRestoreTOC) {
       uint32_t NopInst = support::endian::read32<Endianness>(FixupPtr + 4);
-      // Debug: print what we actually find at the TOC-restore slot.
-      if (NopInst != 0x60000000) {
-        dbgs() << "PPC64 TOC-restore slot MISMATCH:"
-               << " P=0x" << formatv("{0:x}", P)
-               << " slot_addr=0x" << formatv("{0:x}", P + 4)
-               << " found=0x" << formatv("{0:x}", NopInst)
-               << " expected=0x60000000 (nop)"
-               << " S=0x" << formatv("{0:x}", S)
-               << " section=" << B.getSection().getName()
-               << " block=0x" << formatv("{0:x}", B.getAddress().getValue())
-               << " fixup_offset=0x" << formatv("{0:x}", E.getOffset())
-               << "\n";
-        // Print 10 instructions around the slot for context
-        for (int off = -16; off <= 20; off += 4) {
-          uint32_t W = support::endian::read32<Endianness>(FixupPtr + off);
-          dbgs() << "  [P" << (off >= 0 ? "+" : "") << off << "] = 0x"
-                 << formatv("{0:x}", W);
-          if (off == 0) dbgs() << "  <- BL";
-          if (off == 4) dbgs() << "  <- should be NOP";
-          dbgs() << "\n";
-        }
-      }
       assert(NopInst == 0x60000000 &&
              "NOP should be placed here for restoring r2");
       (void)NopInst;
