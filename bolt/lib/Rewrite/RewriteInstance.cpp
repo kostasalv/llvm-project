@@ -2920,14 +2920,6 @@ bool RewriteInstance::analyzeRelocation(
       break;
     }
   }
-  if (!verifyExtractedValue()) {
-    if (BC->isPPC64())
-      BC->errs() << "BOLT-WARNING (temporary audit trace): PPC64 relocation "
-                    "verification mismatch for type "
-                 << object::getELFRelocationTypeName(ELF::EM_PPC64, RType)
-                 << " -- if this fires, the SkipVerification switch above is "
-                    "missing this type\n";
-  }
   assert(verifyExtractedValue() && "mismatched extracted relocation value");
 
   return true;
