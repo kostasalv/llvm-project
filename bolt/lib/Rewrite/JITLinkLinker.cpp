@@ -91,27 +91,6 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
   constexpr uint32_t NOP = 0x60000000u;
   for (auto *Block : G.blocks()) {
     for (auto &Edge : Block->edges()) {
-      // TEMP AUDIT: print every CallBranchDelta[RestoreTOC] edge whose
-      // computed displacement exceeds the 26-bit signed range, before
-      // JITLink's own fixup application fails on it. Remove once diagnosed.
-      if (Edge.getKind() == jitlink::ppc64::CallBranchDelta ||
-          Edge.getKind() == jitlink::ppc64::CallBranchDeltaRestoreTOC) {
-        int64_t P = Block->getAddress().getValue() + Edge.getOffset();
-        int64_t S = Edge.getTarget().getAddress().getValue();
-        int64_t A = Edge.getAddend();
-        int64_t Value = S + A - P;
-        if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
-          errs() << "AUDIT JITLink CBD: kind="
-                 << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
-                         ? "CallBranchDelta"
-                         : "CallBranchDeltaRestoreTOC")
-                 << " P=0x" << Twine::utohexstr(P) << " S=0x"
-                 << Twine::utohexstr(S) << " A=" << A
-                 << " dist=" << Value
-                 << " blockSym=" << (hasSymbols(*Block) ? "yes" : "no")
-                 << " tgtSym=" << Edge.getTarget().getName() << "\n";
-        }
-      }
       if (Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
         continue;
       // The block's content is mutable at this point (pre-fixup).
@@ -129,6 +108,40 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
                           << Twine::utohexstr(Block->getAddress().getValue())
                           << " (slot=0x" << Twine::utohexstr(Slot) << ")\n");
         Edge.setKind(jitlink::ppc64::CallBranchDelta);
+      }
+    }
+  }
+  return Error::success();
+}
+
+/// TEMP AUDIT: print every CallBranchDelta[RestoreTOC] edge whose computed
+/// displacement exceeds the 26-bit signed range, using REAL post-allocation
+/// addresses (this must run as a PostAllocationPass, after
+/// reassignSectionAddress, to see BOLT's final layout -- checking at
+/// PostPrune time sees only provisional JITLink-assigned addresses and
+/// never matches). Remove once diagnosed.
+Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
+  for (auto *Block : G.blocks()) {
+    for (auto &Edge : Block->edges()) {
+      if (Edge.getKind() != jitlink::ppc64::CallBranchDelta &&
+          Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
+        continue;
+      int64_t P = Block->getAddress().getValue() + Edge.getOffset();
+      int64_t S = Edge.getTarget().getAddress().getValue();
+      int64_t A = Edge.getAddend();
+      int64_t Value = S + A - P;
+      if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
+        errs() << "AUDIT JITLink CBD (post-alloc): kind="
+               << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
+                       ? "CallBranchDelta"
+                       : "CallBranchDeltaRestoreTOC")
+               << " P=0x" << Twine::utohexstr(P) << " S=0x"
+               << Twine::utohexstr(S) << " A=" << A << " dist=" << Value
+               << " blockSym=" << (hasSymbols(*Block) ? "yes" : "no")
+               << " tgtSym="
+               << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
+                                              : "<anon>")
+               << " tgtExternal=" << Edge.getTarget().isExternal() << "\n";
       }
     }
   }
@@ -177,6 +190,11 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       this->Graph = &G;
       return Error::success();
     });
+    // TEMP AUDIT: runs after reassignSectionAddress above, so it sees BOLT's
+    // final addresses -- unlike ppc64DowngradeRestoreTOCIfNoNOP which is a
+    // PostPrunePass and only sees provisional JITLink addresses.
+    if (G.getTargetTriple().isPPC64())
+      Config.PostAllocationPasses.push_back(auditCallBranchDeltaRange);
 
     // PPC64 ELFv2: BOLT-rewritten functions hardcode r2 to the original
     // binary's TOC base.  JITLink's default PLT stubs (LongBranchSaveR2) use
