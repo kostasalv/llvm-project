@@ -676,6 +676,25 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
   std::vector<std::pair<BinaryBasicBlock *, std::unique_ptr<BinaryBasicBlock>>>
       Insertions;
 
+  // TEMP AUDIT: trace whether _init is visited by relax() and, if so, whether
+  // its bl to __gmon_start__ is correctly flagged by needsStub(). Remove
+  // after diagnosing the _init/1 CallBranchDelta JITLink error.
+  if (BC.isPPC64() && Func.getOneName().contains("_init") &&
+      !Func.getOneName().contains("initiali")) {
+    BC.errs() << "AUDIT _init: isSimple=" << Func.isSimple()
+              << " isIgnored=" << Func.isIgnored()
+              << " numBBs=" << Func.size() << "\n";
+    for (BinaryBasicBlock &BB : Func) {
+      for (MCInst &Inst : BB) {
+        if (!BC.MIB->isCall(Inst) && !BC.MIB->isBranch(Inst))
+          continue;
+        const MCSymbol *S = BC.MIB->getTargetSymbol(Inst);
+        BC.errs() << "AUDIT _init: insn isCall=" << BC.MIB->isCall(Inst)
+                  << " tgtSym=" << (S ? S->getName() : "<none>") << "\n";
+      }
+    }
+  }
+
   BinaryBasicBlock *Frontier = getBBAtHotColdSplitPoint(Func);
   uint64_t FrontierAddress = Frontier ? BBAddresses[Frontier] : 0;
   if (FrontierAddress)
