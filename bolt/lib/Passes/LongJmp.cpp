@@ -107,6 +107,13 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   // The cost is 28 bytes per stub instead of 4 bytes.
   bool UseLongJmp = BC.isPPC64() && TgtIsFunc;
 
+  // TEMP AUDIT: trace every PPC64 stub creation to find why some stubs for
+  // .plt_call targets don't get UseLongJmp=true. Remove after diagnosing.
+  if (BC.isPPC64())
+    BC.errs() << "AUDIT createNewStub: sym=" << StubSym->getName()
+              << " tgt=" << TgtSym->getName() << " TgtIsFunc=" << TgtIsFunc
+              << " UseLongJmp=" << UseLongJmp << "\n";
+
   if (UseLongJmp) {
     InstructionListType Seq;
     BC.MIB->createLongJmp(Seq, TgtSym, BC.Ctx.get(), /*IsTailCall=*/true);
@@ -663,25 +670,6 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
   constexpr int InsnSize = 4; // AArch64 and PPC64 both use 4-byte instructions
   std::vector<std::pair<BinaryBasicBlock *, std::unique_ptr<BinaryBasicBlock>>>
       Insertions;
-
-  // TEMP AUDIT: trace whether _init is visited by relax() and, if so, whether
-  // its bl to __gmon_start__ is correctly flagged by needsStub(). Remove
-  // after diagnosing the _init/1 CallBranchDelta JITLink error.
-  if (BC.isPPC64() && Func.getOneName().contains("_init") &&
-      !Func.getOneName().contains("initiali")) {
-    BC.errs() << "AUDIT _init: isSimple=" << Func.isSimple()
-              << " isIgnored=" << Func.isIgnored()
-              << " numBBs=" << Func.size() << "\n";
-    for (BinaryBasicBlock &BB : Func) {
-      for (MCInst &Inst : BB) {
-        if (!BC.MIB->isCall(Inst) && !BC.MIB->isBranch(Inst))
-          continue;
-        const MCSymbol *S = BC.MIB->getTargetSymbol(Inst);
-        BC.errs() << "AUDIT _init: insn isCall=" << BC.MIB->isCall(Inst)
-                  << " tgtSym=" << (S ? S->getName() : "<none>") << "\n";
-      }
-    }
-  }
 
   BinaryBasicBlock *Frontier = getBBAtHotColdSplitPoint(Func);
   uint64_t FrontierAddress = Frontier ? BBAddresses[Frontier] : 0;
