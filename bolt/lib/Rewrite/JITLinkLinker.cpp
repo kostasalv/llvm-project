@@ -131,13 +131,23 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
       int64_t A = Edge.getAddend();
       int64_t Value = S + A - P;
       if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
+        std::string SrcNames;
+        for (auto &Sym : Block->getSection().symbols()) {
+          if (&Sym->getBlock() == Block) {
+            if (!SrcNames.empty())
+              SrcNames += ",";
+            SrcNames += Sym->hasName() ? Sym->getName().str() : "<anon-sym>";
+          }
+        }
         errs() << "AUDIT JITLink CBD (post-alloc): kind="
                << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
                        ? "CallBranchDelta"
                        : "CallBranchDeltaRestoreTOC")
                << " P=0x" << Twine::utohexstr(P) << " S=0x"
                << Twine::utohexstr(S) << " A=" << A << " dist=" << Value
-               << " blockSym=" << (hasSymbols(*Block) ? "yes" : "no")
+               << " srcBlockAddr=0x"
+               << Twine::utohexstr(Block->getAddress().getValue())
+               << " srcSyms=[" << SrcNames << "]"
                << " tgtSym="
                << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
                                               : "<anon>")
