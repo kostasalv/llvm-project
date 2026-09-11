@@ -359,12 +359,12 @@ private:
     case ELF::R_PPC64_REL24:
       Kind = ppc64::RequestCall;
       // Determining a target is external or not is deferred in PostPrunePass.
+      // We assume branching to local entry by default, since in PostPrunePass,
+      // we don't have any context to determine LocalEntryOffset. If it finally
+      // turns out to be an external call, we'll have a stub for the external
+      // target, the target of this edge will be the stub and its addend will be
+      // set 0.
       Addend += ELF::decodePPC64LocalEntryOffset((*ObjSymbol)->st_other);
-      // DEBUG: trace every R_PPC64_REL24 edge
-      dbgs() << "PPC64-REL24: offset=0x" << Twine::utohexstr(Offset)
-             << " section=" << BlockToFix.getSection().getName()
-             << " block=0x" << Twine::utohexstr(BlockToFix.getAddress().getValue())
-             << "\n";
       break;
     case ELF::R_PPC64_REL64:
       Kind = ppc64::Delta64;
