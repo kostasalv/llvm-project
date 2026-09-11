@@ -91,6 +91,27 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
   constexpr uint32_t NOP = 0x60000000u;
   for (auto *Block : G.blocks()) {
     for (auto &Edge : Block->edges()) {
+      // TEMP AUDIT: print every CallBranchDelta[RestoreTOC] edge whose
+      // computed displacement exceeds the 26-bit signed range, before
+      // JITLink's own fixup application fails on it. Remove once diagnosed.
+      if (Edge.getKind() == jitlink::ppc64::CallBranchDelta ||
+          Edge.getKind() == jitlink::ppc64::CallBranchDeltaRestoreTOC) {
+        int64_t P = Block->getAddress().getValue() + Edge.getOffset();
+        int64_t S = Edge.getTarget().getAddress().getValue();
+        int64_t A = Edge.getAddend();
+        int64_t Value = S + A - P;
+        if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
+          errs() << "AUDIT JITLink CBD: kind="
+                 << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
+                         ? "CallBranchDelta"
+                         : "CallBranchDeltaRestoreTOC")
+                 << " P=0x" << Twine::utohexstr(P) << " S=0x"
+                 << Twine::utohexstr(S) << " A=" << A
+                 << " dist=" << Value
+                 << " blockSym=" << (hasSymbols(*Block) ? "yes" : "no")
+                 << " tgtSym=" << Edge.getTarget().getName() << "\n";
+        }
+      }
       if (Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
         continue;
       // The block's content is mutable at this point (pre-fixup).
