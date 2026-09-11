@@ -136,7 +136,7 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
           if (&Sym->getBlock() == Block) {
             if (!SrcNames.empty())
               SrcNames += ",";
-            SrcNames += Sym->hasName() ? Sym->getName().str() : "<anon-sym>";
+            SrcNames += Sym->hasName() ? (*Sym->getName()).str() : "<anon-sym>";
           }
         }
         errs() << "AUDIT JITLink CBD (post-alloc): kind="
