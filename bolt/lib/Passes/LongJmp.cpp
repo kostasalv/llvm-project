@@ -107,13 +107,6 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   // The cost is 28 bytes per stub instead of 4 bytes.
   bool UseLongJmp = BC.isPPC64() && TgtIsFunc;
 
-  // TEMP AUDIT: trace every PPC64 stub creation to find why some stubs for
-  // .plt_call targets don't get UseLongJmp=true. Remove after diagnosing.
-  if (BC.isPPC64())
-    BC.errs() << "AUDIT createNewStub: sym=" << StubSym->getName()
-              << " tgt=" << TgtSym->getName() << " TgtIsFunc=" << TgtIsFunc
-              << " UseLongJmp=" << UseLongJmp << "\n";
-
   if (UseLongJmp) {
     InstructionListType Seq;
     BC.MIB->createLongJmp(Seq, TgtSym, BC.Ctx.get(), /*IsTailCall=*/true);
