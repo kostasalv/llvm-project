@@ -665,6 +665,27 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
+  // PPC64 ELFv2: reserve a small safety margin specifically for calls
+  // (26-bit ±32MB `bl`).  BOLT's tentative layout (used here) and the actual
+  // JITLink-linked layout can drift by tens to hundreds of KB due to
+  // alignment padding accumulated across ~40k relocated functions.  A call
+  // whose tentative distance is just under 32MB can end up just over 32MB
+  // in the final binary, producing a JITLink 'CallBranchDelta ... out of
+  // range' error instead of a clean BOLT-time stub.
+  //
+  // This margin is safe to add (unlike a similar attempt for 16-bit
+  // conditional branches, which caused a non-terminating relaxation loop):
+  // every stub created here for an external call target is unconditionally
+  // a fixed-size 28-byte long-jump (see createNewStub's UseLongJmp), not a
+  // relaxable short/long pair. Triggering it slightly earlier only ever
+  // grows the calling function by a bounded, fixed amount, so the fixpoint
+  // in runOnFunctions still converges in a small number of iterations.
+  if (BC.isPPC64() && BC.MIB->isCall(Inst) && BitsAvail == 25) {
+    constexpr int64_t Margin = 1 << 20; // 1MB
+    MaxVal -= Margin;
+    MinVal += Margin;
+  }
+
   return PCOffset < MinVal || PCOffset > MaxVal;
 }
 
