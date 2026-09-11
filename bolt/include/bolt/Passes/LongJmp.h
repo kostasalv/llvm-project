@@ -145,9 +145,15 @@ class LongJmpPass : public BinaryFunctionPass {
   /// this stub using \p AtAddress as its initial location. This location is
   /// an approximation and will be later resolved to the exact location in
   /// a next iteration, in updateStubGroups.
+  /// \p IsCall indicates the original instruction being relaxed was a call
+  /// (e.g. PPC64 bl), even if \p TgtIsFunc is false because the target
+  /// happens to resolve to a local BinaryBasicBlock (e.g. a self-recursive
+  /// call to the function's own entry). This matters on PPC64 ELFv2, where
+  /// a call and a branch share the same 26-bit ±32MB encoding and range
+  /// failure mode, so both need the same long-jump treatment.
   std::pair<std::unique_ptr<BinaryBasicBlock>, MCSymbol *>
   createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
-                bool TgtIsFunc, uint64_t AtAddress);
+                bool TgtIsFunc, uint64_t AtAddress, bool IsCall = false);
 
   /// Replace the target of call or conditional branch in \p Inst with a
   /// a stub that in turn will branch to the target (perform stub insertion).

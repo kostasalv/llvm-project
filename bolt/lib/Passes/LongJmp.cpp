@@ -96,14 +96,16 @@ static bool mayNeedStub(const BinaryContext &BC, const MCInst &Inst) {
 
 std::pair<std::unique_ptr<BinaryBasicBlock>, MCSymbol *>
 LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
-                           bool TgtIsFunc, uint64_t AtAddress) {
+                           bool TgtIsFunc, uint64_t AtAddress, bool IsCall) {
   BinaryFunction &Func = *SourceBB.getFunction();
   const BinaryContext &BC = Func.getBinaryContext();
   const bool IsCold = SourceBB.isCold();
   MCSymbol *StubSym = BC.Ctx->createNamedTempSymbol("Stub");
   std::unique_ptr<BinaryBasicBlock> StubBB = Func.createBasicBlock(StubSym);
 
-  // PPC64 ELFv2: ALL external-function stubs (TgtIsFunc=true) use the full
+  // PPC64 ELFv2: ALL call-target stubs (external functions, TgtIsFunc=true,
+  // or calls whose target happens to resolve to a local BinaryBasicBlock,
+  // e.g. a self-recursive `bl` to the function's own entry) use the full
   // 7-instruction long-jump (lis/ori/rldicr/oris/ori r12, mtctr, bctr).
   // Reasons:
   // 1. After BOLT reorders and relocates functions, any two hot functions
@@ -117,7 +119,13 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   //    works regardless of where the stub ends up in the final layout.
   // 3. StubBits is set to 64 so relaxStub() is a no-op for these stubs.
   // The cost is 28 bytes per stub instead of 4 bytes.
-  bool UseLongJmp = BC.isPPC64() && TgtIsFunc;
+  //
+  // A `bl` and a local-branch-resolved call both encode as CallBranchDelta
+  // (or CallBranchDeltaRestoreTOC) at the ELF/JITLink level, so both are
+  // equally subject to the 26-bit range limit -- TgtIsFunc alone (whether
+  // the CFG resolved a successor BB) is not a reliable signal for whether
+  // the *encoding* is call-shaped and needs long-jump treatment.
+  bool UseLongJmp = BC.isPPC64() && (TgtIsFunc || IsCall);
 
   if (UseLongJmp) {
     InstructionListType Seq;
@@ -299,7 +307,8 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
 
   if (!StubBB) {
     std::tie(NewBB, StubSymbol) =
-        createNewStub(BB, TgtSym, /*is func?*/ !TgtBB, StubCreationAddress);
+        createNewStub(BB, TgtSym, /*is func?*/ !TgtBB, StubCreationAddress,
+                      /*IsCall=*/BC.MIB->isCall(Inst));
     StubBB = NewBB.get();
   }
 
