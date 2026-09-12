@@ -620,6 +620,14 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   const BinaryFunction &Func = *BB.getFunction();
   const BinaryContext &BC = Func.getBinaryContext();
   const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(Inst);
+  // TEMP AUDIT: trace needsStub calls for the known-failing function to see
+  // exactly what TgtSym/isCall/mayNeedStub see at BOLT analysis time.
+  if (BC.isPPC64() && Func.getPrintName().contains("IRTranslator") &&
+      BC.MIB->isCall(Inst)) {
+    BC.errs() << "AUDIT needsStub: func=" << Func.getPrintName()
+              << " isCall=1 tgtSym="
+              << (TgtSym ? TgtSym->getName() : "<none>") << "\n";
+  }
   // PPC64: some direct branch variants (e.g. absolute BLA, or branches whose
   // target is an immediate not yet symbolized) may not yield a symbol.
   // These cannot be range-checked, so conservatively skip stub insertion.
