@@ -121,6 +121,28 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
 /// PostPrune time sees only provisional JITLink-assigned addresses and
 /// never matches). Remove once diagnosed.
 Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
+  // Build a global address->name map of ALL symbols in the graph once, so we
+  // can find the closest-preceding symbol to any failing instruction address
+  // (its real enclosing function), rather than dumping every symbol that
+  // happens to share the same JITLink Block.
+  std::vector<std::pair<uint64_t, StringRef>> AllSyms;
+  for (auto &Sec : G.sections())
+    for (auto *Sym : Sec.symbols())
+      if (Sym->hasName())
+        AllSyms.emplace_back(Sym->getAddress().getValue(), *Sym->getName());
+  llvm::sort(AllSyms);
+
+  auto closestSymbol = [&](uint64_t Addr) -> std::string {
+    auto It = llvm::upper_bound(
+        AllSyms, std::make_pair(Addr, StringRef()),
+        [](const auto &A, const auto &B) { return A.first < B.first; });
+    if (It == AllSyms.begin())
+      return "<none>";
+    --It;
+    return (It->second + "+0x" + Twine::utohexstr(Addr - It->first)).str();
+  };
+
+  unsigned Count = 0;
   for (auto *Block : G.blocks()) {
     for (auto &Edge : Block->edges()) {
       if (Edge.getKind() != jitlink::ppc64::CallBranchDelta &&
@@ -131,23 +153,19 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
       int64_t A = Edge.getAddend();
       int64_t Value = S + A - P;
       if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
-        std::string SrcNames;
-        for (auto &Sym : Block->getSection().symbols()) {
-          if (&Sym->getBlock() == Block) {
-            if (!SrcNames.empty())
-              SrcNames += ",";
-            SrcNames += Sym->hasName() ? (*Sym->getName()).str() : "<anon-sym>";
-          }
-        }
+        ++Count;
+        if (Count > 20) // cap verbose output; the count itself is printed below
+          continue;
         errs() << "AUDIT JITLink CBD (post-alloc): kind="
                << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
                        ? "CallBranchDelta"
                        : "CallBranchDeltaRestoreTOC")
-               << " P=0x" << Twine::utohexstr(P) << " S=0x"
-               << Twine::utohexstr(S) << " A=" << A << " dist=" << Value
-               << " srcBlockAddr=0x"
-               << Twine::utohexstr(Block->getAddress().getValue())
-               << " srcSyms=[" << SrcNames << "]"
+               << " P=0x" << Twine::utohexstr(P) << " (" << closestSymbol(P)
+               << ")"
+               << " target(S+A)=0x" << Twine::utohexstr(S + A) << " ("
+               << closestSymbol(S + A) << ")"
+               << " dist=" << Value
+               << " srcSection=" << Block->getSection().getName()
                << " tgtSym="
                << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
                                               : "<anon>")
@@ -155,6 +173,9 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
       }
     }
   }
+  if (Count)
+    errs() << "AUDIT JITLink CBD (post-alloc): TOTAL out-of-range edges = "
+           << Count << "\n";
   return Error::success();
 }
 
