@@ -808,6 +808,77 @@ PPCMCPlusBuilder::createRelocation(const MCFixup &Fixup,
 
   R.Symbol = const_cast<MCSymbol *>(RelSymbol);
 
+  // PPC64 ELFv2: the generic MCFixupKindInfo name (e.g. "fixup_ppc_half16")
+  // is IDENTICAL for every symbol-modifier variant of a half16 relocation
+  // (@l, @ha, @high, @higha, @higher, @highera, @highest, @highesta) --
+  // upstream PPCELFObjectWriter.cpp distinguishes them by inspecting the
+  // MCSymbolRefExpr's *specifier* (PPC::S_LO, S_HA, S_HIGHEST, ...), not the
+  // fixup kind name.  createRelocation() below only looked at the fixup kind
+  // name, so every one of these variants fell through to the same generic
+  // "TargetSize==16 -> R_PPC64_ADDR16_LO" fallback -- silently corrupting any
+  // multi-instruction absolute address sequence (e.g. LongJmpPass's 7-
+  // instruction PPC64 long-jump: lis/ori/rldicr/oris/ori@highest/higher/hi/lo)
+  // by writing the LOW 16 bits into every immediate field regardless of which
+  // part of the address it was supposed to hold.  This manifested as PPC64
+  // long-jump stubs branching to a garbage address (SIGSEGV) at runtime.
+  //
+  // Fix: find the innermost MCSymbolRefExpr in the fixup's value expression
+  // and check its specifier directly, before falling back to the generic
+  // by-name/by-size heuristics.
+  auto FindSpecifier = [](const MCExpr *E) -> std::optional<uint16_t> {
+    while (E) {
+      if (E->getKind() == MCExpr::SymbolRef)
+        return cast<MCSymbolRefExpr>(E)->getSpecifier();
+      if (E->getKind() == MCExpr::Binary) {
+        // Addend expressions are Sym + Const (see extractFixupExpr); the
+        // symbol side is whichever operand is not a plain constant.
+        const auto *BE = cast<MCBinaryExpr>(E);
+        if (BE->getLHS()->getKind() != MCExpr::Constant) {
+          E = BE->getLHS();
+          continue;
+        }
+        E = BE->getRHS();
+        continue;
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  };
+
+  if (std::optional<uint16_t> Spec = FindSpecifier(Fixup.getValue())) {
+    switch (*Spec) {
+    case PPC::S_LO:
+      R.Type = ELF::R_PPC64_ADDR16_LO;
+      return R;
+    case PPC::S_HI:
+      R.Type = ELF::R_PPC64_ADDR16_HI;
+      return R;
+    case PPC::S_HA:
+      R.Type = ELF::R_PPC64_ADDR16_HA;
+      return R;
+    case PPC::S_HIGH:
+      R.Type = ELF::R_PPC64_ADDR16_HIGH;
+      return R;
+    case PPC::S_HIGHA:
+      R.Type = ELF::R_PPC64_ADDR16_HIGHA;
+      return R;
+    case PPC::S_HIGHER:
+      R.Type = ELF::R_PPC64_ADDR16_HIGHER;
+      return R;
+    case PPC::S_HIGHERA:
+      R.Type = ELF::R_PPC64_ADDR16_HIGHERA;
+      return R;
+    case PPC::S_HIGHEST:
+      R.Type = ELF::R_PPC64_ADDR16_HIGHEST;
+      return R;
+    case PPC::S_HIGHESTA:
+      R.Type = ELF::R_PPC64_ADDR16_HIGHESTA;
+      return R;
+    default:
+      break; // Not a half16-family specifier; fall through to name matching.
+    }
+  }
+
   const MCFixupKind Kind = Fixup.getKind();
   const MCFixupKindInfo FKI = MAB.getFixupKindInfo(Kind);
   llvm::StringRef Name = FKI.Name;
