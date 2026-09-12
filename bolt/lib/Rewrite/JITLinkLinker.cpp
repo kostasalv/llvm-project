@@ -143,8 +143,30 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
   };
 
   unsigned Count = 0;
+  unsigned Delta14Count = 0;
   for (auto *Block : G.blocks()) {
     for (auto &Edge : Block->edges()) {
+      if (Edge.getKind() == jitlink::ppc64::Delta14) {
+        int64_t P = Block->getAddress().getValue() + Edge.getOffset();
+        int64_t S = Edge.getTarget().getAddress().getValue();
+        int64_t A = Edge.getAddend();
+        int64_t Value = S + A - P;
+        if (Value < -(1LL << 15) || Value >= (1LL << 15)) {
+          ++Delta14Count;
+          if (Delta14Count <= 20)
+            errs() << "AUDIT JITLink Delta14 (post-alloc): P=0x"
+                   << Twine::utohexstr(P) << " (" << closestSymbol(P) << ")"
+                   << " target(S+A)=0x" << Twine::utohexstr(S + A) << " ("
+                   << closestSymbol(S + A) << ")"
+                   << " dist=" << Value
+                   << " srcSection=" << Block->getSection().getName()
+                   << " tgtSym="
+                   << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
+                                                  : "<anon>")
+                   << " tgtExternal=" << Edge.getTarget().isExternal() << "\n";
+        }
+        continue;
+      }
       if (Edge.getKind() != jitlink::ppc64::CallBranchDelta &&
           Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
         continue;
@@ -176,6 +198,9 @@ Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
   if (Count)
     errs() << "AUDIT JITLink CBD (post-alloc): TOTAL out-of-range edges = "
            << Count << "\n";
+  if (Delta14Count)
+    errs() << "AUDIT JITLink Delta14 (post-alloc): TOTAL out-of-range edges = "
+           << Delta14Count << "\n";
   return Error::success();
 }
 
