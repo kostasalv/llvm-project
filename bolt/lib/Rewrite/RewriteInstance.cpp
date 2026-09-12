@@ -6400,6 +6400,11 @@ RewriteInstance::patchELFAllocatableRelaSections(ELFObjectFile<ELFT> *File) {
         } else {
           // Usually this case is used for R_*_(I)RELATIVE relocations
           const uint64_t Address = getNewFunctionOrDataAddress(Addend);
+          if (BC->isPPC64() && Addend == 0x12ff6628)
+            BC->errs() << "AUDIT writeRelocations: RelOffset=0x"
+                       << Twine::utohexstr(RelOffset) << " Addend=0x"
+                       << Twine::utohexstr(Addend) << " resolvedAddress=0x"
+                       << Twine::utohexstr(Address) << "\n";
           if (Address)
             Addend = Address;
         }
@@ -6786,6 +6791,17 @@ uint64_t RewriteInstance::getNewFunctionAddress(uint64_t OldAddress) {
 uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
   if (uint64_t Function = getNewFunctionAddress(OldAddress))
     return Function;
+
+  // TEMP AUDIT: trace resolution attempts for the known-problematic address.
+  if (BC->isPPC64() && OldAddress == 0x12ff6628) {
+    const BinaryFunction *BF0 = BC->getBinaryFunctionContainingAddress(OldAddress);
+    BC->errs() << "AUDIT getNewFunctionOrDataAddress: OldAddress=0x12ff6628"
+               << " containingFunc=" << (BF0 ? BF0->getPrintName() : "<none>")
+               << " isEmitted=" << (BF0 ? BF0->isEmitted() : false)
+               << " LEO=" << (BF0 ? (int)BF0->getPPC64LocalEntryOffset() : -1)
+               << " FuncAddr=" << (BF0 ? Twine::utohexstr(BF0->getAddress()).str() : "?")
+               << "\n";
+  }
 
   const BinaryData *BD = BC->getBinaryDataAtAddress(OldAddress);
   if (BD && BD->isMoved())
