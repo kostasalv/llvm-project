@@ -760,36 +760,61 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
   CondBr = nullptr;
   UncondBr = nullptr;
 
+  // An empty block has no terminator: it simply falls through to its
+  // successor. This IS analyzable (not an error case).
   if (Begin == End)
-    return false;
+    return true;
 
   // Look at the last instruction (canonical BOLT pattern)
   InstructionIterator I = End;
   --I;
   const MCInst &Last = *I;
 
-  // Return (blr) → no branch terminator
+  // Return (blr) -> no branch terminator, no successors. Analyzable.
   if (Last.getOpcode() == PPC::BLR) {
-    return false;
+    return true;
   }
 
-  if (isUnconditionalBranch(Last)) {
-    UncondBr = const_cast<MCInst *>(&Last);
-    Tgt = getBranchTargetSymbol(Last);
-    // with an unconditional branch, there's no fall-through
+  // Indirect branches (bctr/bclr and their linked forms) have no statically
+  // known target symbol -- genuinely unanalyzable here.
+  if (isIndirectBranch(Last))
     return false;
+
+  if (isUnconditionalBranch(Last)) {
+    Tgt = getBranchTargetSymbol(Last);
+    if (!Tgt)
+      return false;
+    UncondBr = const_cast<MCInst *>(&Last);
+    // with an unconditional branch, there's no fall-through
+    return true;
   }
 
   if (isConditionalBranch(Last)) {
-    CondBr = const_cast<MCInst *>(&Last);
     Tgt = getBranchTargetSymbol(Last);
+    if (!Tgt)
+      return false;
+    CondBr = const_cast<MCInst *>(&Last);
     // Assume the block has a fallthrough if no following unconditional branch.
     // (BOLT will compute actual fallthrough later once CFG is built.)
-    return false;
+    return true;
   }
 
-  // Otherwise: not a branch terminator (let caller treat as fallthrough/ret)
-  return false;
+  // Otherwise: the block's last instruction is not a branch terminator at
+  // all (e.g. it ends in a call, or in a plain non-control-flow instruction
+  // such as the TOC-restore `nop` slot after a call). This is a normal,
+  // analyzable fallthrough block -- callers such as
+  // BinaryFunction::fixBranches() rely on `true` here to know it is safe to
+  // append a corrective unconditional branch if the block's fallthrough
+  // successor is no longer the next block in the final layout. Returning
+  // `false` in this case (as this function previously did) silently
+  // disabled fixBranches() for every PPC64 function, since it treats a
+  // `false` return as "unanalyzable, leave alone" and skips the block
+  // entirely -- including the `succ_size() == 1` case that inserts the
+  // missing branch. That allowed a call-ending block's fallthrough to
+  // become stale/incorrect after any layout change, silently corrupting
+  // control flow (observed as a runtime crash in
+  // llvm::cl::Option::addArgument() after a call to RegisterManagedStatic).
+  return true;
 }
 
 bool PPCMCPlusBuilder::lowerTailCall(MCInst &Inst) { return false; }
