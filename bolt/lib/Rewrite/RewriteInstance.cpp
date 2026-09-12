@@ -6733,8 +6733,48 @@ RewriteInstance::patchELFAllocatableRelaSections(ELFObjectFile<ELFT> *File) {
 
         if (IsRelative)
           ++DynamicRelativeRelocationsCount;
-        writeRelocation(Section, Rel, RelDynOffset, RelDynEndOffset);
-        RelDynOffset += sizeof(Elf_Rela);
+
+        Elf_Rela NewRelA;
+        MCSymbol *Symbol = Rel.Symbol;
+        uint32_t SymbolIdx = 0;
+        uint64_t Addend = Rel.Addend;
+        uint64_t RelOffset =
+            getNewFunctionOrDataAddress(SectionInputAddress + Rel.Offset);
+
+        RelOffset = RelOffset == 0 ? SectionAddress + Rel.Offset : RelOffset;
+        if (Rel.Symbol) {
+          SymbolIdx = getOutputDynamicSymbolIndex(Symbol);
+        } else {
+          // Usually this case is used for R_*_(I)RELATIVE relocations
+          const uint64_t Address = getNewFunctionOrDataAddress(Addend);
+          if (BC->isPPC64() && Addend == 0x12ff6628)
+            BC->errs() << "AUDIT writeRelocations: RelOffset=0x"
+                       << Twine::utohexstr(RelOffset) << " Addend=0x"
+                       << Twine::utohexstr(Addend) << " resolvedAddress=0x"
+                       << Twine::utohexstr(Address) << "\n";
+          if (Address)
+            Addend = Address;
+        }
+
+        NewRelA.setSymbolAndType(SymbolIdx, Rel.Type, EF.isMips64EL());
+        NewRelA.r_offset = RelOffset;
+        NewRelA.r_addend = Addend;
+
+        const bool IsJmpRel = IsJmpRelocation.contains(Rel.Type);
+        uint64_t &Offset = IsJmpRel ? RelPltOffset : RelDynOffset;
+        const uint64_t &EndOffset =
+            IsJmpRel ? RelPltEndOffset : RelDynEndOffset;
+        if (!Offset || !EndOffset) {
+          BC->errs() << "BOLT-ERROR: Invalid offsets for dynamic relocation\n";
+          exit(1);
+        }
+
+        if (Offset + sizeof(NewRelA) > EndOffset) {
+          BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation\n";
+          exit(1);
+        }
+
+        writeRela(&NewRelA, Offset);
       }
     }
   };
@@ -7115,6 +7155,17 @@ uint64_t RewriteInstance::getNewFunctionAddress(uint64_t OldAddress) {
 uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
   if (uint64_t Function = getNewFunctionAddress(OldAddress))
     return Function;
+
+  // TEMP AUDIT: trace resolution attempts for the known-problematic address.
+  if (BC->isPPC64() && OldAddress == 0x12ff6628) {
+    const BinaryFunction *BF0 = BC->getBinaryFunctionContainingAddress(OldAddress);
+    BC->errs() << "AUDIT getNewFunctionOrDataAddress: OldAddress=0x12ff6628"
+               << " containingFunc=" << (BF0 ? BF0->getPrintName() : "<none>")
+               << " isEmitted=" << (BF0 ? BF0->isEmitted() : false)
+               << " LEO=" << (BF0 ? (int)BF0->getPPC64LocalEntryOffset() : -1)
+               << " FuncAddr=" << (BF0 ? Twine::utohexstr(BF0->getAddress()).str() : "?")
+               << "\n";
+  }
 
   const BinaryData *BD = BC->getBinaryDataAtAddress(OldAddress);
   if (BD && BD->isMoved())
