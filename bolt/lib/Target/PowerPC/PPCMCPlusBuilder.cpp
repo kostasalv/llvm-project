@@ -175,10 +175,16 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::BL8_NOTOC_RM:
   case PPC::BL8_LDinto_toc:
   case PPC::BL8_LDinto_toc_RM:
-  case PPC::BDNZ:
-  case PPC::BDNZL:
     return 26;
-  // Conditional branch: 16-bit signed offset (±32KB)
+  // Conditional branch: 16-bit signed offset (±32KB).
+  // BDNZ/BDNZL ("decrement CTR and branch if nonzero", used for loop
+  // backedges) share the exact same B-form 14-bit BD displacement field as
+  // BC/BCL (see PPCInstrFormats.td's BForm_1, used by both) -- they are NOT
+  // 26-bit like B/BL. Misclassifying them as 26-bit made needsStub()
+  // consider far-away BDNZ targets (e.g. across a hot/cold split, ~500KB
+  // away) as "in range" when they are actually restricted to ±32KB, so no
+  // stub was ever created and JITLink later rejected the Delta14 fixup as
+  // out of range.
   case PPC::BC:
   case PPC::gBC:
   case PPC::BCL:
@@ -187,6 +193,8 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::BCCA:  // conditional branch absolute (extended mnemonic)
   case PPC::BCCL:  // conditional branch with link (extended mnemonic)
   case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
+  case PPC::BDNZ:
+  case PPC::BDNZL:
     return 16;
   default:
     return 0;
