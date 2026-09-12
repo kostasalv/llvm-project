@@ -90,6 +90,8 @@ const char *getEdgeKindName(Edge::Kind K) {
     return "Pointer16LODS";
   case Pointer14:
     return "Pointer14";
+  case Delta14:
+    return "Delta14";
   case Delta64:
     return "Delta64";
   case Delta34:

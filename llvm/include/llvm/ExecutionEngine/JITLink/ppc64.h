@@ -37,6 +37,7 @@ enum EdgeKind_ppc64 : Edge::Kind {
   Pointer16LO,
   Pointer16LODS,
   Pointer14,
+  Delta14,
   Delta64,
   Delta34,
   Delta32,
@@ -427,6 +428,18 @@ inline Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
     static const uint32_t Low14Mask = 0xfffc;
     uint64_t Value = S + A;
     assert((Value & 3) == 0 && "Pointer14 requires 4-byte alignment");
+    if (LLVM_UNLIKELY(!isInt<16>(Value))) {
+      return makeTargetOutOfRangeError(G, B, E);
+    }
+    uint32_t Inst = support::endian::read32<Endianness>(FixupPtr);
+    support::endian::write32<Endianness>(FixupPtr, (Inst & ~Low14Mask) |
+                                                       (Value & Low14Mask));
+    break;
+  }
+  case Delta14: {
+    static const uint32_t Low14Mask = 0xfffc;
+    int64_t Value = S + A - P;
+    assert((Value & 3) == 0 && "Delta14 requires 4-byte alignment");
     if (LLVM_UNLIKELY(!isInt<16>(Value))) {
       return makeTargetOutOfRangeError(G, B, E);
     }
