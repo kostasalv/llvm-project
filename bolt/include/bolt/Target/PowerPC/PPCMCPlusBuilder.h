@@ -38,6 +38,11 @@ public:
   void createLongJmp(InstructionListType &Seq, const MCSymbol *Target,
                      MCContext *Ctx, bool IsTailCall = false) override;
 
+  void createLongJmpWithTOCRestore(InstructionListType &Seq,
+                                   const MCSymbol *Target, MCContext *Ctx,
+                                   uint64_t TOCBase,
+                                   bool IsTailCall = false) override;
+
   int getMemoryOperandNo(const MCInst &Inst) const override;
 
   void replaceBranchTarget(MCInst &Inst, const MCSymbol *TBB,

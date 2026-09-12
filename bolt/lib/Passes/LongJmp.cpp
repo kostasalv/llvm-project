@@ -115,9 +115,36 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   // the *encoding* is call-shaped and needs long-jump treatment.
   bool UseLongJmp = BC.isPPC64() && (TgtIsFunc || IsCall);
 
+  // PPC64 ELFv2: if the target is linker-generated PLT/branch-extension code
+  // (.plt_call., .plt_branch.) or any other ignored function, it expects the
+  // ORIGINAL binary's TOC base already in r2 (it has no GEP prologue of its
+  // own to reconstruct r2, unlike a real BOLT-rewritten function target).
+  // A plain long-jump 'bctr' would instead carry over whatever r2 the
+  // CALLING function's rewritten body last set -- its own, different TOC --
+  // causing the target to compute a garbage TOC/GOT-relative address and
+  // crash. Restore r2 to BC.PPC64TOCBase immediately before the jump in
+  // this case. See createLongJmpWithTOCRestore's comment for full detail.
+  bool NeedsTOCRestore = false;
+  if (UseLongJmp && BC.PPC64TOCBase != 0) {
+    if (TgtSym->getName().contains(".plt_call.") ||
+        TgtSym->getName().contains(".plt_branch.")) {
+      NeedsTOCRestore = true;
+    } else {
+      uint64_t EntryID = 0;
+      if (const BinaryFunction *TgtFunc =
+              BC.getFunctionForSymbol(TgtSym, &EntryID))
+        NeedsTOCRestore = TgtFunc->isIgnored();
+    }
+  }
+
   if (UseLongJmp) {
     InstructionListType Seq;
-    BC.MIB->createLongJmp(Seq, TgtSym, BC.Ctx.get(), /*IsTailCall=*/true);
+    if (NeedsTOCRestore)
+      BC.MIB->createLongJmpWithTOCRestore(Seq, TgtSym, BC.Ctx.get(),
+                                          BC.PPC64TOCBase,
+                                          /*IsTailCall=*/true);
+    else
+      BC.MIB->createLongJmp(Seq, TgtSym, BC.Ctx.get(), /*IsTailCall=*/true);
     StubBB->addInstructions(Seq.begin(), Seq.end());
   } else {
     MCInst Inst;
