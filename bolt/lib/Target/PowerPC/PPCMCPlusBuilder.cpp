@@ -278,6 +278,84 @@ void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
   Seq.emplace_back(I);
 }
 
+void PPCMCPlusBuilder::createLongJmpWithTOCRestore(InstructionListType &Seq,
+                                                    const MCSymbol *Target,
+                                                    MCContext *Ctx,
+                                                    uint64_t TOCBase,
+                                                    bool IsTailCall) {
+  // PPC64 ELFv2: linker-generated PLT/branch-extension stubs (.plt_call.,
+  // .plt_branch.) are the ORIGINAL binary's un-rewritten code.  Per the
+  // ELFv2 ABI (Section 4.2.5.3, Procedure Linkage Table): "the caller has
+  // set up r2 to hold the TOC pointer" -- these stubs load their real
+  // target from a TOC/GOT-relative offset using r2, with no GEP prologue
+  // of their own to reconstruct it (unlike a BOLT-rewritten function, whose
+  // 2-instruction GEP prologue sets its OWN r2 independently of the caller).
+  //
+  // A plain createLongJmp() 'bctr' preserves whatever r2 the CALLING
+  // function's rewritten body last set, which is that function's own new
+  // TOC base -- not the original one these stubs need.  The stub then
+  // computes a garbage GOT-relative address and jumps to it (observed as a
+  // SIGSEGV to a non-canonical PC).
+  //
+  // Fix: materialize the ORIGINAL TOC base into r2 immediately before the
+  // jump, using the same absolute-immediate-load sequence as the address
+  // load into r12 (lis/ori/rldicr/oris/ori). r2 is not used again by our
+  // stub itself (control transfers away via bctr), so clobbering it here is
+  // safe from our side; it is exactly what the target expects to find.
+  const unsigned R2 = PPC::X2;
+  const uint16_t Highest = (TOCBase >> 48) & 0xffff;
+  const uint16_t Higher = (TOCBase >> 32) & 0xffff;
+  const uint16_t Hi = (TOCBase >> 16) & 0xffff;
+  const uint16_t Lo = TOCBase & 0xffff;
+
+  MCInst I;
+
+  // lis r2, TOCBase@highest
+  I = MCInst();
+  I.setOpcode(PPC::LIS8);
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createImm((int16_t)Highest));
+  Seq.emplace_back(I);
+
+  // ori r2, r2, TOCBase@higher
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createImm(Higher));
+  Seq.emplace_back(I);
+
+  // rldicr r2, r2, 32, 31
+  I = MCInst();
+  I.setOpcode(PPC::RLDICR);
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createImm(32));
+  I.addOperand(MCOperand::createImm(31));
+  Seq.emplace_back(I);
+
+  // oris r2, r2, TOCBase@h
+  I = MCInst();
+  I.setOpcode(PPC::ORIS8);
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createImm(Hi));
+  Seq.emplace_back(I);
+
+  // ori r2, r2, TOCBase@l
+  I = MCInst();
+  I.setOpcode(PPC::ORI8);
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createReg(R2));
+  I.addOperand(MCOperand::createImm(Lo));
+  Seq.emplace_back(I);
+
+  // Now the usual absolute jump via r12/CTR, reusing createLongJmp's logic.
+  InstructionListType JmpSeq;
+  createLongJmp(JmpSeq, Target, Ctx, IsTailCall);
+  Seq.insert(Seq.end(), JmpSeq.begin(), JmpSeq.end());
+}
+
 int PPCMCPlusBuilder::getMemoryOperandNo(const MCInst & /*Inst*/) const {
   return -1;
 }
