@@ -2983,6 +2983,25 @@ void RewriteInstance::processDynamicRelocations() {
     readDynamicRelocations(DynamicRelSectionOrErr->getSectionRef(),
                            /*IsJmpRel*/ false);
   }
+
+  // PPC64 ELFv2: '.branch_lt' ("branch lookup table") is a linker-generated
+  // table of absolute function addresses, used by '.plt_branch.'-style
+  // trampolines (addis/ld/mtctr/bctr GOT-relative indirect jumps) for calls
+  // that exceed the 26-bit ±32MB 'bl' range within the same module.  Its
+  // relocations live in their own '.rela.branch_lt' section, NOT in
+  // '.rela.dyn' -- they are not reachable via DT_RELA/DT_RELASZ, which only
+  // cover the section(s) the dynamic segment actually points to. Without
+  // reading them here, entries in '.branch_lt' pointing into a function BOLT
+  // relocates are never registered for patching, so writeRelocations() never
+  // updates them: the .plt_branch. trampoline keeps jumping to the
+  // function's OLD address after BOLT moves it, corrupting control flow at
+  // runtime with no BOLT-time diagnostic.
+  if (BC->isPPC64()) {
+    if (ErrorOr<BinarySection &> BranchLTRelSectionOrErr =
+            BC->getUniqueSectionByName(".rela.branch_lt"))
+      readDynamicRelocations(BranchLTRelSectionOrErr->getSectionRef(),
+                             /*IsJmpRel*/ false);
+  }
 }
 
 void RewriteInstance::processRelocations() {
