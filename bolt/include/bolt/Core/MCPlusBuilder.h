@@ -1857,6 +1857,22 @@ public:
     llvm_unreachable("not implemented");
   }
 
+  /// PPC64 ELFv2: like createLongJmp(), but additionally (re)materializes
+  /// r2 to \p TOCBase immediately before the indirect jump. Needed when
+  /// \p Target is linker-generated PLT/branch-extension code (.plt_call.,
+  /// .plt_branch.) that expects r2 to already hold the ORIGINAL binary's
+  /// TOC base (per the ELFv2 ABI's "the caller has set up r2 to hold the
+  /// TOC pointer" PLT calling convention) -- such code has no GEP prologue
+  /// of its own to reconstruct r2, unlike a real BOLT-rewritten function.
+  /// Default implementation ignores \p TOCBase and forwards to
+  /// createLongJmp(), which is correct for every other target.
+  virtual void createLongJmpWithTOCRestore(InstructionListType &Seq,
+                                           const MCSymbol *Target,
+                                           MCContext *Ctx, uint64_t TOCBase,
+                                           bool IsTailCall = false) {
+    createLongJmp(Seq, Target, Ctx, IsTailCall);
+  }
+
   virtual void createShortJmp(InstructionListType &Seq, const MCSymbol *Target,
                               MCContext *Ctx, bool IsTailCall = false) {
     llvm_unreachable("not implemented");
