@@ -653,6 +653,37 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
       return false;
   }
 
+  // PPC64 ELFv2: always create a BOLT-side relay stub for calls (isCall) to
+  // .plt_call./.plt_branch. targets or to any ignored function, rather than
+  // relying on BOLT's own distance estimate.
+  //
+  // These calls keep their original R_PPC64_REL24 relocation and reach
+  // JITLink as a plain RequestCall edge.  JITLink's PLTTableManager
+  // (ppc64.h) unconditionally converts such calls to CallBranchDelta
+  // targeting an auto-generated $__STUBS table entry (LongBranchNoTOC),
+  // which JITLink places once near the start of the hot section --
+  // a placement decision invisible to BOLT's tentative layout.  A caller
+  // physically far from the hot-section start (e.g. deep in the unprofiled
+  // ".text.cold" region, which can span tens of MB independent of
+  // --split-functions -- see tentativeLayoutRelocMode's hot/cold function
+  // partitioning) can end up >32MB from that stub table even when BOLT's
+  // own distance check to the *original* ignored-function address said it
+  // was in range.  The result is a JITLink 'CallBranchDelta ... out of
+  // range' failure that BOLT never sees coming.
+  //
+  // Forcing our own stub here means the call goes through
+  // createNewStub's unconditional long-jump path (UseLongJmp) instead,
+  // which uses 'bctr' -- unaffected by where JITLink puts its stub table.
+  if (BC.isPPC64() && BC.MIB->isCall(Inst) && !TgtBB) {
+    if (TgtSym->getName().contains(".plt_call.") ||
+        TgtSym->getName().contains(".plt_branch."))
+      return true;
+    uint64_t EntryID = 0;
+    const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+    if (TargetFunc && TargetFunc->isIgnored())
+      return true;
+  }
+
   int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
   assert(BitsAvail < 63 && "PCRelEncodingSize is too large to use int64_t to"
                            "check for out-of-bounds.");
