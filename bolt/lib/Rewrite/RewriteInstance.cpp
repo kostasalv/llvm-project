@@ -2997,9 +2997,9 @@ void RewriteInstance::processDynamicRelocations() {
   // function's OLD address after BOLT moves it, corrupting control flow at
   // runtime with no BOLT-time diagnostic.
   if (BC->isPPC64()) {
-    if (ErrorOr<BinarySection &> BranchLTRelSectionOrErr =
-            BC->getUniqueSectionByName(".rela.branch_lt"))
-      readDynamicRelocations(BranchLTRelSectionOrErr->getSectionRef(),
+    if (ErrorOr<BinarySection &> BranchLTSectionOrErr =
+            BC->getUniqueSectionByName(".branch_lt"))
+      readDynamicRelocations(BranchLTSectionOrErr->getSectionRef(),
                              /*IsJmpRel*/ false);
   }
 }
