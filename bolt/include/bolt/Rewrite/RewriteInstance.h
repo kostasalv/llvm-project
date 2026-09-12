@@ -133,6 +133,14 @@ private:
   /// Read relocations from a given section.
   void readDynamicRelocations(const object::SectionRef &Section, bool IsJmpRel);
 
+  /// PPC64 ELFv2: read R_PPC64_RELATIVE relocations from '.rela.branch_lt'
+  /// directly by parsing raw Elf64_Rela entries, bypassing
+  /// object::SectionRef::relocations() (which does not discover this
+  /// section's associated RELA section via the normal sh_link/sh_info
+  /// scan for this toolchain's output). \p BranchLTSection is the
+  /// allocatable '.branch_lt' data section being relocated.
+  void readBranchLTRelocations(BinarySection &BranchLTSection);
+
   /// Read relocations from a given RELR section.
   void readDynamicRelrRelocations(BinarySection &Section);
 
