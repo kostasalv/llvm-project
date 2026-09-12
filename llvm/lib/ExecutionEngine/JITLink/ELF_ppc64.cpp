@@ -350,6 +350,11 @@ private:
     case ELF::R_PPC64_REL16_LO:
       Kind = ppc64::Delta16LO;
       break;
+    case ELF::R_PPC64_REL14:
+    case ELF::R_PPC64_REL14_BRTAKEN:
+    case ELF::R_PPC64_REL14_BRNTAKEN:
+      Kind = ppc64::Delta14;
+      break;
     case ELF::R_PPC64_REL32:
       Kind = ppc64::Delta32;
       break;
