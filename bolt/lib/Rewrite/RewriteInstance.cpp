@@ -7270,17 +7270,6 @@ uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
   if (uint64_t Function = getNewFunctionAddress(OldAddress))
     return Function;
 
-  // TEMP AUDIT: trace resolution attempts for the known-problematic address.
-  if (BC->isPPC64() && OldAddress == 0x12ff6628) {
-    const BinaryFunction *BF0 = BC->getBinaryFunctionContainingAddress(OldAddress);
-    BC->errs() << "AUDIT getNewFunctionOrDataAddress: OldAddress=0x12ff6628"
-               << " containingFunc=" << (BF0 ? BF0->getPrintName() : "<none>")
-               << " isEmitted=" << (BF0 ? BF0->isEmitted() : false)
-               << " LEO=" << (BF0 ? (int)BF0->getPPC64LocalEntryOffset() : -1)
-               << " FuncAddr=" << (BF0 ? Twine::utohexstr(BF0->getAddress()).str() : "?")
-               << "\n";
-  }
-
   const BinaryData *BD = BC->getBinaryDataAtAddress(OldAddress);
   if (BD && BD->isMoved())
     return BD->getOutputAddress();
