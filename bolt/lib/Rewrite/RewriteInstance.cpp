@@ -7219,6 +7219,23 @@ uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
   if (const BinaryFunction *BF =
           BC->getBinaryFunctionContainingAddress(OldAddress)) {
     if (BF->isEmitted()) {
+      // PPC64 ELFv2: a reference to Func+LocalEntryOffset (typically Func+8)
+      // is the function's ABI local entry point, not a BOLT secondary entry
+      // or CFG basic block boundary -- see the local-entry handling in
+      // PatchEntries.cpp and BinaryFunction::setPPC64LocalEntryOffset().  It
+      // is never registered as a BB start or an internal-reference offset,
+      // so the generic lookups below would never find it and this function
+      // would incorrectly fall through to the "unable to get new address"
+      // error.  The local entry offset from the function's start is
+      // preserved identically in BOLT's rewritten output (every
+      // BOLT-emitted function keeps the same 2-instruction GEP prologue
+      // immediately followed by the local entry), so the new address is
+      // simply the function's new output address plus the same offset.
+      if (BC->isPPC64() && BF->getPPC64LocalEntryOffset() &&
+          OldAddress ==
+              BF->getAddress() + BF->getPPC64LocalEntryOffset())
+        return BF->getOutputAddress() + BF->getPPC64LocalEntryOffset();
+
       // If OldAddress is another entry point of the function or the target of
       // an indirect goto, then BOLT could get the new address.
       bool HasInternalRelocationTarget =
