@@ -3266,15 +3266,8 @@ void RewriteInstance::processDynamicRelocations() {
   // runtime with no BOLT-time diagnostic.
   if (BC->isPPC64()) {
     if (ErrorOr<BinarySection &> BranchLTSectionOrErr =
-            BC->getUniqueSectionByName(".branch_lt")) {
-      BC->errs() << "AUDIT: found .branch_lt at 0x"
-                 << Twine::utohexstr(BranchLTSectionOrErr->getAddress())
-                 << " size=" << BranchLTSectionOrErr->getSize() << "\n";
-      readDynamicRelocations(BranchLTSectionOrErr->getSectionRef(),
-                             /*IsJmpRel*/ false);
-    } else {
-      BC->errs() << "AUDIT: .branch_lt NOT FOUND\n";
-    }
+            BC->getUniqueSectionByName(".branch_lt"))
+      readBranchLTRelocations(*BranchLTSectionOrErr);
   }
 }
 
@@ -3306,15 +3299,6 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section,
     dbgs() << "BOLT-DEBUG: reading relocations for section " << SectionName
            << ":\n";
   });
-
-  {
-    unsigned RelCount = 0;
-    for (const RelocationRef &R : Section.relocations())
-      (void)R, ++RelCount;
-    BC->errs() << "AUDIT readDynamicRelocations: section="
-               << cantFail(Section.getName()) << " relocCount=" << RelCount
-               << "\n";
-  }
 
   for (const RelocationRef &Rel : Section.relocations()) {
     uint32_t JmpRelocationIndex = Relocation::NoJmpRelocationIndex;
@@ -3357,11 +3341,6 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section,
     // Check if this relocation targets an address within a function. This
     // happens with indirect goto.
     const uint64_t ReferencedAddress = SymbolAddress + Addend;
-    if (BC->isPPC64() && Addend == 0x12ff6628)
-      BC->errs() << "AUDIT readDynamicRelocations: offset=0x"
-                 << Twine::utohexstr(Rel.getOffset()) << " Addend=0x"
-                 << Twine::utohexstr(Addend) << " isRelative="
-                 << Relocation::isRelative(RType) << "\n";
     if (Relocation::isRelative(RType)) {
       if (SymbolAddress != 0) {
         BC->errs() << "BOLT-ERROR: symbol address non zero for RELATIVE "
@@ -3375,6 +3354,46 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section,
                              /*Value=*/0, /*IsRELR=*/false, JmpRelocationIndex);
   }
 }
+
+void RewriteInstance::readBranchLTRelocations(BinarySection &BranchLTSection) {
+  // PPC64 ELFv2: object::SectionRef::relocations() does not discover
+  // '.rela.branch_lt' as the RELA section for '.branch_lt' on this
+  // toolchain's output (confirmed by instrumentation: relocCount==0 despite
+  // readelf -r showing 1856 valid R_PPC64_RELATIVE entries in
+  // '.rela.branch_lt' with correct sh_link/sh_info). Parse the raw
+  // Elf64_Rela entries directly instead of relying on that API.
+  ErrorOr<BinarySection &> RelSectionOrErr =
+      BC->getUniqueSectionByName(".rela.branch_lt");
+  if (!RelSectionOrErr)
+    return;
+
+  StringRef Contents = RelSectionOrErr->getContents();
+  constexpr size_t EntrySize = 24; // sizeof(Elf64_Rela): 3 x uint64_t.
+  const size_t NumEntries = Contents.size() / EntrySize;
+  DataExtractor DE(Contents, BC->AsmInfo->isLittleEndian());
+
+  for (size_t I = 0; I < NumEntries; ++I) {
+    uint64_t Cursor = I * EntrySize;
+    const uint64_t Offset = DE.getUnsigned(&Cursor, 8);
+    const uint64_t Info = DE.getUnsigned(&Cursor, 8);
+    const uint64_t Addend = DE.getUnsigned(&Cursor, 8);
+
+    const uint32_t RType = static_cast<uint32_t>(Info);
+    if (Relocation::isNone(RType))
+      continue;
+
+    if (!Relocation::isRelative(RType)) {
+      // .branch_lt is only known to carry R_PPC64_RELATIVE entries; treat
+      // anything else conservatively as unsupported for this section rather
+      // than guessing at symbol-based handling.
+      continue;
+    }
+
+    handleRelativeDynamicRelocation(Offset, Addend);
+    BC->addDynamicRelocation(Offset, nullptr, RType, Addend);
+  }
+}
+
 
 void RewriteInstance::readDynamicRelrRelocations(BinarySection &Section) {
   assert(Section.isAllocatable() && "allocatable expected");
