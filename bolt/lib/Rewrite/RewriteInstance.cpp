@@ -2998,9 +2998,15 @@ void RewriteInstance::processDynamicRelocations() {
   // runtime with no BOLT-time diagnostic.
   if (BC->isPPC64()) {
     if (ErrorOr<BinarySection &> BranchLTSectionOrErr =
-            BC->getUniqueSectionByName(".branch_lt"))
+            BC->getUniqueSectionByName(".branch_lt")) {
+      BC->errs() << "AUDIT: found .branch_lt at 0x"
+                 << Twine::utohexstr(BranchLTSectionOrErr->getAddress())
+                 << " size=" << BranchLTSectionOrErr->getSize() << "\n";
       readDynamicRelocations(BranchLTSectionOrErr->getSectionRef(),
                              /*IsJmpRel*/ false);
+    } else {
+      BC->errs() << "AUDIT: .branch_lt NOT FOUND\n";
+    }
   }
 }
 
@@ -3071,6 +3077,11 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section,
     // Check if this relocation targets an address within a function. This
     // happens with indirect goto.
     const uint64_t ReferencedAddress = SymbolAddress + Addend;
+    if (BC->isPPC64() && Addend == 0x12ff6628)
+      BC->errs() << "AUDIT readDynamicRelocations: offset=0x"
+                 << Twine::utohexstr(Rel.getOffset()) << " Addend=0x"
+                 << Twine::utohexstr(Addend) << " isRelative="
+                 << Relocation::isRelative(RType) << "\n";
     if (Relocation::isRelative(RType)) {
       if (SymbolAddress != 0) {
         BC->errs() << "BOLT-ERROR: symbol address non zero for RELATIVE "
