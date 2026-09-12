@@ -206,6 +206,20 @@ BinaryBasicBlock *LongJmpPass::lookupStubFromGroup(
                            "check for out-of-bounds.");
   int64_t MaxVal = (1ULL << BitsAvail) - 1;
   int64_t MinVal = -(1ULL << BitsAvail);
+  // PPC64 ELFv2: apply the same 1MB safety margin as needsStub() when
+  // deciding whether to reuse a shared/local stub for a call.  A reused
+  // stub that looks in-range using BOLT's tentative layout can end up out
+  // of range once JITLink actually links the binary (see needsStub's
+  // detailed comment on hot/cold layout drift).  Reusing a stub that is
+  // itself a call target has the exact same 26-bit range exposure as
+  // creating a fresh one, so the margin must apply here too -- otherwise
+  // callers far from a shared stub's tentative address keep reusing it
+  // instead of getting their own correctly-checked stub.
+  if (BC.isPPC64() && BC.MIB->isCall(Inst) && BitsAvail == 25) {
+    constexpr int64_t Margin = 1 << 20; // 1MB
+    MaxVal -= Margin;
+    MinVal += Margin;
+  }
   uint64_t PCRelTgtAddress = Cand->first;
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
