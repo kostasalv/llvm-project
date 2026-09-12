@@ -3307,6 +3307,15 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section,
            << ":\n";
   });
 
+  {
+    unsigned RelCount = 0;
+    for (const RelocationRef &R : Section.relocations())
+      (void)R, ++RelCount;
+    BC->errs() << "AUDIT readDynamicRelocations: section="
+               << cantFail(Section.getName()) << " relocCount=" << RelCount
+               << "\n";
+  }
+
   for (const RelocationRef &Rel : Section.relocations()) {
     uint32_t JmpRelocationIndex = Relocation::NoJmpRelocationIndex;
     if (IsJmpRel) {
