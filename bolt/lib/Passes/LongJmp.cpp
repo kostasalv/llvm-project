@@ -742,6 +742,21 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
+  // TEMP AUDIT: trace needsStub's decision for cold conditional branches to
+  // see BOLT's own tentative-layout distance estimate vs. the final JITLink
+  // out-of-range failure (which uses real post-allocation addresses).
+  if (BC.isPPC64() && BC.MIB->isConditionalBranch(Inst) && BB.isCold()) {
+    bool WouldStub = PCOffset < MinVal || PCOffset > MaxVal;
+    BC.errs() << "AUDIT needsStub(cond,cold): func=" << Func.getPrintName()
+              << " DotAddress=0x" << Twine::utohexstr(DotAddress)
+              << " TgtSym=" << (TgtSym ? TgtSym->getName() : "<none>")
+              << " TgtBB=" << (TgtBB ? "yes" : "no")
+              << " PCRelTgtAddress=0x" << Twine::utohexstr(PCRelTgtAddress)
+              << " PCOffset=" << PCOffset
+              << " MinVal=" << MinVal << " MaxVal=" << MaxVal
+              << " WouldStub=" << WouldStub << "\n";
+  }
+
   // PPC64 ELFv2: reserve a small safety margin specifically for calls
   // (26-bit ±32MB `bl`).  BOLT's tentative layout (used here) and the actual
   // JITLink-linked layout can drift by tens to hundreds of KB due to
