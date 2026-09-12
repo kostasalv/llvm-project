@@ -610,7 +610,7 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(Inst);
   // TEMP AUDIT: trace needsStub calls for the known-failing function to see
   // exactly what TgtSym/isCall/mayNeedStub see at BOLT analysis time.
-  if (BC.isPPC64() && Func.getPrintName().contains("IRTranslator") &&
+  if (BC.isPPC64() && Func.getPrintName().find("IRTranslator") != std::string::npos &&
       BC.MIB->isCall(Inst)) {
     BC.errs() << "AUDIT needsStub: func=" << Func.getPrintName()
               << " isCall=1 tgtSym="
