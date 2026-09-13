@@ -127,8 +127,26 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   case PPC::BL8_LDinto_toc:
   case PPC::BL8_LDinto_toc_RM:
   case PPC::B:             // unconditional relative branch
-  case PPC::BDNZ:          // decrement CTR, branch if not zero
-  case PPC::BDNZL:         // decrement CTR, branch with link if not zero
+  // BDNZ/BDZ family (decrement CTR and branch if [not] zero) and their
+  // link/branch-hint variants -- see the block comment on
+  // getPCRelEncodingSize() below for why these share BC/BCL's 14-bit BD
+  // field rather than B/BL's 26-bit LI field. AA=0 (PC-relative) forms only;
+  // the AA=1 (absolute, *A suffix) forms are handled in the "no PC-relative
+  // operand" bucket below, matching BA/BLA.
+  case PPC::BDNZ:
+  case PPC::BDNZL:
+  case PPC::BDNZp:
+  case PPC::BDNZLp:
+  case PPC::BDNZm:
+  case PPC::BDNZLm:
+  case PPC::BDZ:
+  case PPC::BDZL:
+  case PPC::BDZp:
+  case PPC::BDZLp:
+  case PPC::BDZm:
+  case PPC::BDZLm:
+  case PPC::BDNZ8:
+  case PPC::BDZ8:
     return 0;
 
   // Conditional relative branch: BO, BI, BD (target at operand 2)
@@ -148,6 +166,18 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   case PPC::BLA8_RM:
   case PPC::BLA8_NOP_RM:
   case PPC::BA:
+  case PPC::BDNZA:
+  case PPC::BDNZLA:
+  case PPC::BDNZAp:
+  case PPC::BDNZLAp:
+  case PPC::BDNZAm:
+  case PPC::BDNZLAm:
+  case PPC::BDZA:
+  case PPC::BDZLA:
+  case PPC::BDZAp:
+  case PPC::BDZLAp:
+  case PPC::BDZAm:
+  case PPC::BDZLAm:
     return -1;
 
   default:
@@ -177,7 +207,7 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::BL8_LDinto_toc_RM:
     return 26;
   // Conditional branch: 16-bit signed offset (±32KB).
-  // BDNZ/BDNZL ("decrement CTR and branch if nonzero", used for loop
+  // BDNZ/BDZ ("decrement CTR and branch if [not] zero", used for loop
   // backedges) share the exact same B-form 14-bit BD displacement field as
   // BC/BCL (see PPCInstrFormats.td's BForm_1, used by both) -- they are NOT
   // 26-bit like B/BL. Misclassifying them as 26-bit made needsStub()
@@ -185,6 +215,19 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   // away) as "in range" when they are actually restricted to ±32KB, so no
   // stub was ever created and JITLink later rejected the Delta14 fixup as
   // out of range.
+  //
+  // This is the whole BDNZ/BDZ family, not just BDNZ/BDNZL: every mnemonic
+  // built from BForm_1 (bdnz/bdz, their absolute "*a" forms, their
+  // link "*l" forms, and their branch-hint "+"/"-" forms, i.e. "*p"/"*m" in
+  // TableGen) encodes the same 14-bit BD field, and real codegen emits
+  // several of them -- PPCCTRLoops.cpp materializes plain bdnz/bdz for
+  // hardware-loop backedges, and PPCBranchSelector.cpp rewrites those to
+  // their "opposite" mnemonic (bdnz<->bdz) when expanding an out-of-range
+  // branch, so bdz is just as reachable as bdnz in real binaries. The
+  // absolute ("*a") and 64-bit-pseudo (BDNZ8/BDZ8, used pre-encoding by
+  // codegen but not emitted by the disassembler) forms are included here
+  // for completeness/defensiveness even though only bdnz/bdz/bdnzl/bdzl are
+  // expected to appear in disassembled PPC64 ELFv2 binaries BOLT processes.
   case PPC::BC:
   case PPC::gBC:
   case PPC::BCL:
@@ -195,6 +238,30 @@ int PPCMCPlusBuilder::getPCRelEncodingSize(const MCInst &Inst) const {
   case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
   case PPC::BDNZ:
   case PPC::BDNZL:
+  case PPC::BDNZA:
+  case PPC::BDNZLA:
+  case PPC::BDNZp:
+  case PPC::BDNZLp:
+  case PPC::BDNZAp:
+  case PPC::BDNZLAp:
+  case PPC::BDNZm:
+  case PPC::BDNZLm:
+  case PPC::BDNZAm:
+  case PPC::BDNZLAm:
+  case PPC::BDZ:
+  case PPC::BDZL:
+  case PPC::BDZA:
+  case PPC::BDZLA:
+  case PPC::BDZp:
+  case PPC::BDZLp:
+  case PPC::BDZAp:
+  case PPC::BDZLAp:
+  case PPC::BDZm:
+  case PPC::BDZLm:
+  case PPC::BDZAm:
+  case PPC::BDZLAm:
+  case PPC::BDNZ8:
+  case PPC::BDZ8:
     return 16;
   default:
     return 0;
@@ -515,8 +582,35 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
   case PPC::gBC:   // generic conditional branch (bt/bf with BO field)
   case PPC::gBCL:  // generic conditional branch with link
-  case PPC::BDNZ:  // decrement CTR and branch if not zero
-  case PPC::BDNZL: // decrement CTR and branch with link
+  // BDNZ/BDZ family (decrement CTR and branch if [not] zero, plus their
+  // absolute/link/branch-hint variants) -- see isConditionalBranch() for
+  // why the whole BForm_1 family, not just BDNZ/BDNZL, needs to be listed.
+  case PPC::BDNZ:
+  case PPC::BDNZL:
+  case PPC::BDNZA:
+  case PPC::BDNZLA:
+  case PPC::BDNZp:
+  case PPC::BDNZLp:
+  case PPC::BDNZAp:
+  case PPC::BDNZLAp:
+  case PPC::BDNZm:
+  case PPC::BDNZLm:
+  case PPC::BDNZAm:
+  case PPC::BDNZLAm:
+  case PPC::BDZ:
+  case PPC::BDZL:
+  case PPC::BDZA:
+  case PPC::BDZLA:
+  case PPC::BDZp:
+  case PPC::BDZLp:
+  case PPC::BDZAp:
+  case PPC::BDZLAp:
+  case PPC::BDZm:
+  case PPC::BDZLm:
+  case PPC::BDZAm:
+  case PPC::BDZLAm:
+  case PPC::BDNZ8:
+  case PPC::BDZ8:
   case PPC::BCTR:  // branch to CTR
   case PPC::BCTRL: // branch to CTR with link
   case PPC::BLR:   // branch to LR
@@ -594,8 +688,41 @@ bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   // This matches the exact off-by-one heap overread/overwrite Valgrind
   // reported in _GLOBAL__sub_I_LoopInterchange.cpp's inlined
   // SmallVector::push_back growth code.
+  //
+  // The bug applied to the WHOLE BDNZ/BDZ family, not just BDNZ/BDNZL:
+  // PPCBranchSelector.cpp's out-of-range-branch expansion rewrites bdnz to
+  // its "opposite" mnemonic bdz (and vice versa, plus the *8 64-bit-mode
+  // pseudo forms) when it needs to jump over an inserted long branch (see
+  // PPCBranchSelector.cpp's runOnMachineFunction), so bdz is exactly as
+  // likely to appear in a real PPC64 binary as bdnz -- and was previously
+  // NOT recognized as a conditional branch at all, meaning a block ending
+  // in bdz got the exact same silent-corruption treatment described above.
   case PPC::BDNZ:
   case PPC::BDNZL:
+  case PPC::BDNZA:
+  case PPC::BDNZLA:
+  case PPC::BDNZp:
+  case PPC::BDNZLp:
+  case PPC::BDNZAp:
+  case PPC::BDNZLAp:
+  case PPC::BDNZm:
+  case PPC::BDNZLm:
+  case PPC::BDNZAm:
+  case PPC::BDNZLAm:
+  case PPC::BDZ:
+  case PPC::BDZL:
+  case PPC::BDZA:
+  case PPC::BDZLA:
+  case PPC::BDZp:
+  case PPC::BDZLp:
+  case PPC::BDZAp:
+  case PPC::BDZLAp:
+  case PPC::BDZm:
+  case PPC::BDZLm:
+  case PPC::BDZAm:
+  case PPC::BDZLAm:
+  case PPC::BDNZ8:
+  case PPC::BDZ8:
     return true;
   default:
     return false;
@@ -619,24 +746,50 @@ bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I) const {
   // BO/CR-bit style operand that MCPlusBuilder's generic infrastructure
   // knows how to flip via reverseBranchCondition()/getInvertedCondCode().
   //
-  // BDNZ/BDNZL are also conditional branches (see isConditionalBranch()
-  // above), but their "condition" is implicit in the opcode itself: the
-  // opposite-sense branch is a genuinely different instruction, BDZ/BDZL
-  // ("decrement CTR and branch if ZERO"), not a variant of the same
-  // instruction with a different immediate/CR-bit operand. PPC's
-  // MCPlusBuilder does not implement reverseBranchCondition()/
-  // getCondCode() for BDNZ, so the base class's reverseBranchCondition()
-  // would hit `llvm_unreachable("not implemented")` if
+  // BDNZ/BDZ (and the rest of the family) are also conditional branches
+  // (see isConditionalBranch() above), but their "condition" is implicit in
+  // the opcode itself: the opposite-sense branch is a genuinely different
+  // instruction, e.g. BDZ/BDZL ("decrement CTR and branch if ZERO") for
+  // BDNZ/BDNZL, not a variant of the same instruction with a different
+  // immediate/CR-bit operand. PPC's MCPlusBuilder does not implement
+  // reverseBranchCondition()/getCondCode() for this family, so the base
+  // class's reverseBranchCondition() would hit
+  // `llvm_unreachable("not implemented")` if
   // BinaryFunction::fixBranches()'s "swap successors to avoid an extra
   // unconditional branch" optimization ever tried to invert one (now that
-  // isConditionalBranch() reports BDNZ/BDNZL as conditional, that code
-  // path is reachable). Returning false here makes fixBranches() take its
-  // safe fallback -- leave the branch's sense alone and materialize an
-  // explicit unconditional branch for the non-fallthrough successor
-  // instead of trying to reverse the condition.
+  // isConditionalBranch() reports the whole family as conditional, that
+  // code path is reachable for all of them, not just BDNZ/BDNZL). Returning
+  // false here makes fixBranches() take its safe fallback -- leave the
+  // branch's sense alone and materialize an explicit unconditional branch
+  // for the non-fallthrough successor instead of trying to reverse the
+  // condition.
   switch (opc(I)) {
   case PPC::BDNZ:
   case PPC::BDNZL:
+  case PPC::BDNZA:
+  case PPC::BDNZLA:
+  case PPC::BDNZp:
+  case PPC::BDNZLp:
+  case PPC::BDNZAp:
+  case PPC::BDNZLAp:
+  case PPC::BDNZm:
+  case PPC::BDNZLm:
+  case PPC::BDNZAm:
+  case PPC::BDNZLAm:
+  case PPC::BDZ:
+  case PPC::BDZL:
+  case PPC::BDZA:
+  case PPC::BDZLA:
+  case PPC::BDZp:
+  case PPC::BDZLp:
+  case PPC::BDZAp:
+  case PPC::BDZLAp:
+  case PPC::BDZm:
+  case PPC::BDZLm:
+  case PPC::BDZAm:
+  case PPC::BDZLAm:
+  case PPC::BDNZ8:
+  case PPC::BDZ8:
     return false;
   default:
     return MCPlusBuilder::isReversibleBranch(I);

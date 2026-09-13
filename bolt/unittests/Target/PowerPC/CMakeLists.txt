@@ -1,3 +1,10 @@
+set(LLVM_LINK_COMPONENTS
+  DebugInfoDWARF
+  Object
+  MC
+  PowerPC
+  )
+
 set(BOLTTargetPowerPCTestsSources
     PPCMCPlusBuilderTest.cpp)
 
@@ -8,8 +15,11 @@ add_bolt_unittest(BOLTTargetPowerPCTests
 target_link_libraries(BOLTTargetPowerPCTests PRIVATE
   LLVMBOLTTargetPowerPC
   LLVMBOLTCore
+  LLVMBOLTRewrite
   LLVMCore
 )
+
+target_compile_definitions(BOLTTargetPowerPCTests PRIVATE POWERPC_AVAILABLE)
 
 target_include_directories(BOLTTargetPowerPCTests PRIVATE
   ${LLVM_BINARY_DIR}/include
