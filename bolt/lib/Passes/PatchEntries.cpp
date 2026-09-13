@@ -90,17 +90,30 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
     uint64_t NextValidByte = 0; // offset of the byte past the last patch
     bool Success = Function.forEachEntryPoint([&](uint64_t Offset,
                                                   const MCSymbol *Symbol) {
-      // PPC64 ELFv2: the local entry point (offset == getPPC64LocalEntryOffset)
-      // is an ABI artifact — callers that already set up r2 branch directly to
-      // it, skipping the 2-instruction global-entry TOC preamble.  It is NOT a
-      // separately patchable entry: the global-entry patch (at offset 0) already
-      // redirects execution to the new body, and the new body has its own
-      // global/local entry preamble.  Patching the local entry separately would
-      // overwrite valid instructions and is unnecessary; skip it silently.
-      if (BC.isPPC64() && Offset != 0 &&
-          Offset == Function.getPPC64LocalEntryOffset())
-        return true; // skip, but don't fail
-
+      // PPC64 ELFv2: the local entry point (offset == getPPC64LocalEntryOffset,
+      // typically 8) is a distinct, independently-reachable ABI entry — callers
+      // that already have r2 set up branch directly to it, skipping the
+      // 2-instruction global-entry TOC preamble at offset 0. It is NOT
+      // redundant with the offset-0 patch and must NOT be skipped: the
+      // global-entry redirect written at offset 0 is a 7-instruction/28-byte
+      // absolute long-tail-call (see createLongTailCall / PatchSize below),
+      // which physically spans bytes [0, 28) and so overwrites the local
+      // entry's original bytes (usually at offset 8) with the *middle* of
+      // that instruction sequence — not a valid branch target. A caller
+      // that jumps directly to the original local entry then lands mid-stub
+      // (e.g. on the `rldicr` that assumes r12's high bits were already
+      // loaded by the preceding `lis`/`ori`, which never executed), producing
+      // a garbage absolute address and a wild branch at runtime.
+      //
+      // Falling through to the generic overlap check below (Offset <
+      // NextValidByte) lets the existing safety net handle this correctly:
+      // since LocalEntryOffset (~8) is almost always less than PatchSize
+      // (28), the check will detect the unavoidable overlap and this
+      // function will be reported as unpatchable and marked Ignored --
+      // safe (original bytes untouched, left unoptimized) rather than
+      // silently corrupted. See the mid-stub wild-branch crash in
+      // CommandLineParser::addOption (called through a local-entry thunk)
+      // for the concrete failure this previously caused.
       if (Offset < NextValidByte) {
         if (opts::Verbosity >= 1)
           BC.outs() << "BOLT-INFO: unable to patch entry point in " << Function
