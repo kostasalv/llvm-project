@@ -564,6 +564,38 @@ bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   case PPC::BCCLA: // extended-mnemonic conditional branch with link absolute
   case PPC::gBC:   // generic conditional branch (bt/bf with full BO field)
   case PPC::gBCL:  // generic conditional branch with link
+  // BDNZ/BDNZL ("decrement CTR and branch if nonzero") are the standard
+  // PPC64 counted-loop backedge instructions emitted for hand-inlined or
+  // vectorizer-generated fixed-trip-count copy loops (e.g. the SmallVector
+  // growth pattern in every C++ global constructor's push_back calls).
+  // They branch on the CTR register being nonzero and otherwise FALL
+  // THROUGH to the next instruction -- i.e. they behave exactly like a
+  // two-way conditional branch (taken = loop backedge, not-taken =
+  // fallthrough to loop-exit code), and getPCRelEncodingSize()/
+  // getPCRelOperandNum() already treat them that way for relocation and
+  // stub-insertion purposes.
+  //
+  // Before this fix they were missing here, so BinaryFunction::buildCFG()'s
+  // fallthrough-successor-edge logic
+  // (`IsPrevFT = MIB->isConditionalBranch(*LastInstr);` for
+  // `succ_size() == 1` blocks) treated a block ending in bdnz as having NO
+  // fallthrough successor. The single-instruction loop-exit block right
+  // after the bdnz (which had zero *taken*-branch predecessors, since the
+  // taken edge is the loop backedge) then looked unreachable and was
+  // deleted by the eliminate-unreachable pass. With the loop-exit block
+  // gone, bdnz's only remaining successor was the loop head itself, so
+  // BinaryFunction::fixBranches() "helpfully" appended an unconditional
+  // `b <loop-head>` right after the bdnz to reach that lone successor.
+  // At runtime, whenever CTR naturally reached zero and bdnz fell
+  // through (the loop's normal exit), execution hit the injected
+  // unconditional branch instead and re-entered the copy loop for one
+  // extra iteration -- reading one element past the end of the old buffer
+  // and writing one element past the end of the newly allocated buffer.
+  // This matches the exact off-by-one heap overread/overwrite Valgrind
+  // reported in _GLOBAL__sub_I_LoopInterchange.cpp's inlined
+  // SmallVector::push_back growth code.
+  case PPC::BDNZ:
+  case PPC::BDNZL:
     return true;
   default:
     return false;
@@ -579,6 +611,35 @@ bool PPCMCPlusBuilder::isUnconditionalBranch(const MCInst &I) const {
     return true;
   default:
     return false;
+  }
+}
+
+bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I) const {
+  // BC/BCC/gBC (and their linked forms) encode the branch condition in a
+  // BO/CR-bit style operand that MCPlusBuilder's generic infrastructure
+  // knows how to flip via reverseBranchCondition()/getInvertedCondCode().
+  //
+  // BDNZ/BDNZL are also conditional branches (see isConditionalBranch()
+  // above), but their "condition" is implicit in the opcode itself: the
+  // opposite-sense branch is a genuinely different instruction, BDZ/BDZL
+  // ("decrement CTR and branch if ZERO"), not a variant of the same
+  // instruction with a different immediate/CR-bit operand. PPC's
+  // MCPlusBuilder does not implement reverseBranchCondition()/
+  // getCondCode() for BDNZ, so the base class's reverseBranchCondition()
+  // would hit `llvm_unreachable("not implemented")` if
+  // BinaryFunction::fixBranches()'s "swap successors to avoid an extra
+  // unconditional branch" optimization ever tried to invert one (now that
+  // isConditionalBranch() reports BDNZ/BDNZL as conditional, that code
+  // path is reachable). Returning false here makes fixBranches() take its
+  // safe fallback -- leave the branch's sense alone and materialize an
+  // explicit unconditional branch for the non-fallthrough successor
+  // instead of trying to reverse the condition.
+  switch (opc(I)) {
+  case PPC::BDNZ:
+  case PPC::BDNZL:
+    return false;
+  default:
+    return MCPlusBuilder::isReversibleBranch(I);
   }
 }
 
