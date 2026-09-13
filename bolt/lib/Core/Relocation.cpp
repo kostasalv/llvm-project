@@ -438,6 +438,80 @@ static uint64_t canEncodeValueRISCV(uint32_t Type, uint64_t Value,
   }
 }
 
+// PPC64 word-granularity PC-relative branch relocations (R_PPC64_REL24 used
+// by `bl`/`b`, R_PPC64_REL14 family used by `bc`/`bdnz`/`bdz`) encode their
+// displacement into a *sub-field* of the 32-bit instruction word, not the
+// whole word:
+//
+//   IForm  (bl/b):  opcode[0:5] LI[6:29] AA[30] LK[31]     (PPCInstrFormats.td)
+//   BForm* (bc/...): opcode/BO[6:10] BI[11:15] BD[16:29] AA[30] LK[31]
+//
+// `PPCAsmBackend::adjustFixupValue()` (llvm/lib/Target/PowerPC) computes the
+// exact same masked field for the assembler's own fixups:
+//   fixup_ppc_br24:     Value & 0x3fffffc   (bits 6..29, i.e. LI<<2)
+//   fixup_ppc_brcond14: Value & 0xfffc      (bits 16..29, i.e. BD<<2)
+// and its applyFixup() ORs that masked field into the existing instruction
+// bytes rather than overwriting them, precisely so opcode/AA/LK/BO/BI stay
+// intact. encodeValuePPC64 below mirrors that: it returns ONLY the masked
+// displacement field (with all other bits zero), so that the caller
+// (BinarySection::flushPendingRelocations) can OR it into to the existing
+// instruction word instead of clobbering it. This is unlike every other
+// encodeValueX() helper in this file (which return values meant to be
+// written wholesale over the relocated bytes) -- PPC64 needs a
+// read-mask-OR-write because REL24/REL14 don't occupy a whole
+// byte/half/word-aligned span of the instruction.
+static bool canEncodeValuePPC64(uint32_t Type, uint64_t Value, uint64_t PC) {
+  switch (Type) {
+  default:
+    // Absolute / TOC / GOT / DTPREL / half16-family relocations: BOLT never
+    // range-checks these (matches prior behavior; they are not PC-relative
+    // sub-field encodings).
+    return true;
+  case ELF::R_PPC64_REL24:
+    // 24-bit word displacement (26-bit byte displacement after <<2), signed.
+    return isInt<26>(int64_t(Value) - int64_t(PC));
+  case ELF::R_PPC64_REL14:
+  case ELF::R_PPC64_REL14_BRTAKEN:
+  case ELF::R_PPC64_REL14_BRNTAKEN:
+    // 14-bit word displacement (16-bit byte displacement after <<2), signed.
+    return isInt<16>(int64_t(Value) - int64_t(PC));
+  }
+}
+
+// See the big comment above canEncodeValuePPC64(): for REL24/REL14 this
+// returns ONLY the masked displacement sub-field (all other bits zero), to
+// be OR'd into the existing instruction word by the caller. For every other
+// (absolute/TOC/GOT/etc.) PPC64 relocation type it returns Value unmodified,
+// matching the previous (pre-fix) behavior, since those are written whole
+// (see getSizeForTypePPC64: 2/8-byte types) or handled natively via
+// createExpr()'s @ha/@lo fixups and never reach this path in practice.
+static uint64_t encodeValuePPC64(uint32_t Type, uint64_t Value, uint64_t PC) {
+  switch (Type) {
+  default:
+    return Value;
+  case ELF::R_PPC64_REL24: {
+    int64_t Disp = int64_t(Value) - int64_t(PC);
+    assert(isInt<26>(Disp) &&
+           "R_PPC64_REL24 target out of +/-32MB range; caller should have "
+           "checked canEncodeValue() first");
+    // LI field occupies bits [6:29] of the word (bits 2..25 counting from
+    // the LSB of a little-endian 32-bit read), i.e. mask 0x03FFFFFC once the
+    // low 2 (always-zero) bits of the byte displacement are included.
+    return uint64_t(Disp) & 0x03FFFFFCULL;
+  }
+  case ELF::R_PPC64_REL14:
+  case ELF::R_PPC64_REL14_BRTAKEN:
+  case ELF::R_PPC64_REL14_BRNTAKEN: {
+    int64_t Disp = int64_t(Value) - int64_t(PC);
+    assert(isInt<16>(Disp) &&
+           "R_PPC64_REL14 target out of +/-32KB range; caller should have "
+           "checked canEncodeValue() first");
+    // BD field occupies bits [16:29] of the word -> mask 0x0000FFFC.
+    return uint64_t(Disp) & 0x0000FFFCULL;
+  }
+  }
+}
+
 static uint64_t encodeValueRISCV(uint32_t Type, uint64_t Value, uint64_t PC) {
   switch (Type) {
   default:
@@ -966,7 +1040,7 @@ uint64_t Relocation::encodeValue(uint32_t Type, uint64_t Value, uint64_t PC) {
     return encodeValueX86(Type, Value, PC);
   case Triple::ppc64:
   case Triple::ppc64le:
-    return Value;
+    return encodeValuePPC64(Type, Value, PC);
   }
 }
 
@@ -983,7 +1057,23 @@ bool Relocation::canEncodeValue(uint32_t Type, uint64_t Value, uint64_t PC) {
     return true;
   case Triple::ppc64:
   case Triple::ppc64le:
-    return true;
+    return canEncodeValuePPC64(Type, Value, PC);
+  }
+}
+
+uint64_t Relocation::getEncodingMask(uint32_t Type) {
+  if (Arch != Triple::ppc64 && Arch != Triple::ppc64le)
+    return ~0ULL;
+
+  switch (Type) {
+  default:
+    return ~0ULL;
+  case ELF::R_PPC64_REL24:
+    return 0x03FFFFFCULL;
+  case ELF::R_PPC64_REL14:
+  case ELF::R_PPC64_REL14_BRTAKEN:
+  case ELF::R_PPC64_REL14_BRNTAKEN:
+    return 0x0000FFFCULL;
   }
 }
 
