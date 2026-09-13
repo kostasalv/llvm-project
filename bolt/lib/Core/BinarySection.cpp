@@ -194,15 +194,35 @@ void BinarySection::flushPendingRelocations(raw_fd_ostream &OS,
     Value = Relocation::encodeValue(Reloc.Type, Value,
                                     SectionAddress + Reloc.Offset);
 
-    safePWrite(OS, reinterpret_cast<const char *>(&Value),
-               Relocation::getSizeForType(Reloc.Type),
+    const size_t RelocSize = Relocation::getSizeForType(Reloc.Type);
+
+    // Some relocations (PPC64 R_PPC64_REL24/R_PPC64_REL14) only occupy a
+    // sub-field of the bytes they live in -- the rest of those bytes encode
+    // the instruction's opcode/AA/LK/BO/BI bits, which must be preserved.
+    // encodeValue() for those types returns just the masked displacement
+    // field (all other bits zero); do a read-modify-write against the
+    // pristine original contents (this section's Contents always holds the
+    // as-yet-unpatched instruction bytes for the offset range we're about to
+    // overwrite) so we only touch the bits inside the mask.
+    const uint64_t Mask = Relocation::getEncodingMask(Reloc.Type);
+    if (Mask != ~0ULL) {
+      assert(RelocSize <= sizeof(uint64_t) &&
+             "relocation with sub-field mask unexpectedly large");
+      StringRef Existing = getContents().substr(Reloc.Offset, RelocSize);
+      assert(Existing.size() == RelocSize &&
+             "cannot read pre-existing instruction bits to preserve them");
+      uint64_t OldBits = 0;
+      memcpy(&OldBits, Existing.data(), RelocSize);
+      Value = (OldBits & ~Mask) | (Value & Mask);
+    }
+
+    safePWrite(OS, reinterpret_cast<const char *>(&Value), RelocSize,
                SectionFileOffset + Reloc.Offset);
 
     LLVM_DEBUG(
         dbgs() << "BOLT-DEBUG: writing value 0x" << Twine::utohexstr(Value)
-               << " of size " << Relocation::getSizeForType(Reloc.Type)
-               << " at section offset 0x" << Twine::utohexstr(Reloc.Offset)
-               << " address 0x"
+               << " of size " << RelocSize << " at section offset 0x"
+               << Twine::utohexstr(Reloc.Offset) << " address 0x"
                << Twine::utohexstr(SectionAddress + Reloc.Offset)
                << " file offset 0x"
                << Twine::utohexstr(SectionFileOffset + Reloc.Offset) << '\n';);

@@ -1942,6 +1942,25 @@ bool BinaryFunction::scanExternalRefs() {
             TargetBF->setNeedsPatch(true);
       }
 
+      // PPC64 R_PPC64_REL24 ("bl"/"b", +/-32MB) and R_PPC64_REL14
+      // ("bc"/"bdnz"/"bdz", +/-32KB) relocations only encode a limited-range
+      // PC-relative word displacement into a sub-field of the instruction
+      // (see encodeValuePPC64/canEncodeValuePPC64 in Relocation.cpp). When
+      // the target moved far enough away that the new displacement no
+      // longer fits, we cannot patch this call/branch site in place.
+      // Mirror AArch64's CALL26/JUMP26 handling above: mark the relocation
+      // optional (flushPendingRelocations will skip writing it, leaving the
+      // original call pointing at the target's OLD/original address) and
+      // ask PatchEntries to install a redirect stub at the target's
+      // original entry so the skipped call still reaches the right code
+      // (at the cost of one extra jump).
+      if (BC.isPPC64()) {
+        Rel->setOptional();
+
+        if (BinaryFunction *TargetBF = BC.getFunctionForSymbol(Rel->Symbol))
+          TargetBF->setNeedsPatch(true);
+      }
+
       Rel->Offset += getAddress() - getOriginSection()->getAddress() + Offset;
       FunctionRelocations.push_back(*Rel);
     }
