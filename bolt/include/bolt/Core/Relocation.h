@@ -100,6 +100,17 @@ public:
   /// Return true if there are enough bits to encode the relocation value.
   static bool canEncodeValue(uint32_t Type, uint64_t Value, uint64_t PC);
 
+  /// Return a mask of the bits that encodeValue() actually sets for this
+  /// relocation \p Type. For most relocations this is all-ones (~0ULL),
+  /// meaning the caller (e.g. BinarySection::flushPendingRelocations) should
+  /// overwrite the full relocation-sized field with the encoded value. Some
+  /// relocations (e.g. PPC64 R_PPC64_REL24/R_PPC64_REL14) only occupy a
+  /// sub-field of the instruction word that also contains opcode/flag bits
+  /// that must be preserved; for those, this returns a narrower mask so the
+  /// caller can do a read-modify-write: keep the existing bits outside the
+  /// mask and only replace the bits inside it.
+  static uint64_t getEncodingMask(uint32_t Type);
+
   /// Extract current relocated value from binary contents. This is used for
   /// RISC architectures where values are encoded in specific bits depending
   /// on the relocation value. For X86, we limit to sign extending the value
