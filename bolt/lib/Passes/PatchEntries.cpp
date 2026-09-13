@@ -94,26 +94,57 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       // typically 8) is a distinct, independently-reachable ABI entry — callers
       // that already have r2 set up branch directly to it, skipping the
       // 2-instruction global-entry TOC preamble at offset 0. It is NOT
-      // redundant with the offset-0 patch and must NOT be skipped: the
-      // global-entry redirect written at offset 0 is a 7-instruction/28-byte
-      // absolute long-tail-call (see createLongTailCall / PatchSize below),
-      // which physically spans bytes [0, 28) and so overwrites the local
-      // entry's original bytes (usually at offset 8) with the *middle* of
-      // that instruction sequence — not a valid branch target. A caller
-      // that jumps directly to the original local entry then lands mid-stub
-      // (e.g. on the `rldicr` that assumes r12's high bits were already
-      // loaded by the preceding `lis`/`ori`, which never executed), producing
-      // a garbage absolute address and a wild branch at runtime.
+      // redundant with the offset-0 patch: the global-entry redirect written
+      // at offset 0 is a 7-instruction/28-byte absolute long-tail-call (see
+      // createLongTailCall / PatchSize below), which physically spans bytes
+      // [0, 28) and so overwrites the local entry's original bytes (usually
+      // at offset 8) with the *middle* of that instruction sequence — not a
+      // valid branch target. A caller that jumps directly to the original
+      // local entry then lands mid-stub (e.g. on the `rldicr` that assumes
+      // r12's high bits were already loaded by the preceding `lis`/`ori`,
+      // which never executed), producing a garbage absolute address and a
+      // wild branch at runtime.
       //
-      // Falling through to the generic overlap check below (Offset <
-      // NextValidByte) lets the existing safety net handle this correctly:
-      // since LocalEntryOffset (~8) is almost always less than PatchSize
-      // (28), the check will detect the unavoidable overlap and this
-      // function will be reported as unpatchable and marked Ignored --
-      // safe (original bytes untouched, left unoptimized) rather than
-      // silently corrupted. See the mid-stub wild-branch crash in
-      // CommandLineParser::addOption (called through a local-entry thunk)
-      // for the concrete failure this previously caused.
+      // This can NOT be left to the generic overlap check below (Offset <
+      // NextValidByte): that check only fires for offsets that
+      // forEachEntryPoint() actually calls back with, i.e. offset 0 plus
+      // whatever is registered in Function.Labels/SecondaryEntryPoints via
+      // isMultiEntry(). The local entry offset is deliberately never
+      // registered there (see RewriteInstance::handleRelocation's
+      // IsPPC64LocalEntry handling, which routes func+LEP references to
+      // getOrCreateLocalLabel() instead of addEntryPointAtOffset() precisely
+      // to avoid it being treated as a CFG/BOLT entry point). So for a
+      // function whose only extra entry is its ABI local entry point (i.e.
+      // not independently multi-entry), forEachEntryPoint() calls back
+      // exactly once, for offset 0 — the check below never sees the
+      // conflicting offset and the overlap goes undetected, silently
+      // producing the mid-stub wild branch described above. Confirmed via
+      // gdb/objdump on a BOLT-rewritten llc crashing with CTR =
+      // 0xf7649a5013a72480: the low 32 bits (0x13a72480) are exactly
+      // llvm::cl::ValuesClass::apply<...>'s relocated address (the
+      // `oris`/`ori` pair at the stub's offsets 12/16 that DID execute), while
+      // the high 32 bits are garbage left in r12 from skipping the stub's
+      // first `lis`/`ori` (offsets 0/4) — because the caller (a kept-in-place
+      // ELFv2 `.long_branch.` thunk with its original R_PPC64_REL24 Func+8
+      // relocation) branched straight to Func+8, landing on the `rldicr` at
+      // stub offset 8.
+      //
+      // Make the check explicit instead of relying on forEachEntryPoint to
+      // surface it: once the offset-0 (global-entry) patch's extent is known,
+      // directly test whether the local entry offset falls inside it.
+      if (BC.isPPC64() && Offset == 0) {
+        const uint8_t LEPOffset = Function.getPPC64LocalEntryOffset();
+        if (LEPOffset && LEPOffset < Offset + PatchSize) {
+          if (opts::Verbosity >= 1)
+            BC.outs() << "BOLT-INFO: unable to patch entry point in "
+                      << Function << " at offset 0x"
+                      << Twine::utohexstr(LEPOffset)
+                      << " (ELFv2 local entry point overlaps global-entry "
+                         "patch)\n";
+          return false;
+        }
+      }
+
       if (Offset < NextValidByte) {
         if (opts::Verbosity >= 1)
           BC.outs() << "BOLT-INFO: unable to patch entry point in " << Function
