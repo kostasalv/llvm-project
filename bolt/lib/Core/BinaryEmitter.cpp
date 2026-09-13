@@ -365,23 +365,35 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function,
     Streamer.emitLabel(StartSymbol);
   }
 
-  // PPC64 ELFv2: encode local entry point offset in st_other for every
-  // BOLT-rewritten function.  BOLT always emits a 2-instruction GEP prologue
-  // (addis r2,r12,N; addi r2,r2,M) before the local entry point, so the
-  // local entry is always 8 bytes past the global entry.  Without this,
-  // R_PPC64_REL24 relocations in the emitted .o use addend 0 (LEP offset 0),
-  // causing JITLink to target the GEP which recomputes r2 from r12 and
-  // corrupts the TOC pointer for intra-binary calls.
-  //
-  // Encoding: Val=3 → ((1<<3)>>2)<<2 = 8 bytes → st_other |= (3<<5) = 0x60
+  // PPC64 ELFv2: re-encode the function's local entry point offset in
+  // st_other for its BOLT-rewritten symbol(s).  BOLT re-emits a function's
+  // original instructions as-is, so a 2-instruction GEP prologue
+  // (addis r2,r12,N; addi r2,r2,M) is present in the output iff it was
+  // present in the input -- this is exactly what
+  // BinaryFunction::getPPC64LocalEntryOffset() already records (populated
+  // from the original ELF symbol's st_other at parse time, see
+  // RewriteInstance.cpp's decodePPC64LocalEntryOffset call). Stamping every
+  // function with a hardcoded offset of 8 regardless of whether it actually
+  // has a GEP prologue is wrong: functions with no local entry in the
+  // original binary (offset 0, e.g. leaf functions with no TOC dependency)
+  // would incorrectly get LEP=8 in the output, causing any caller that
+  // branches to them (whose R_PPC64_REL24 addend/BOLT-resolved target
+  // includes the ABI-mandated local-entry adjustment) to land 8 bytes into
+  // the function body -- skipping real, non-preamble instructions and
+  // executing garbage. This produced a wild-branch-shaped crash landing
+  // mid-function (observed in MCFragmentC2, which has no local entry).
+  // Preserve the function's own recorded offset instead of a constant.
   if (BC.isPPC64() && FF.isMainFragment()) {
-    constexpr unsigned PPC64LEPOffset8 =
-        (3u << ELF::STO_PPC64_LOCAL_BIT) & ELF::STO_PPC64_LOCAL_MASK;
+    const unsigned LEPOffsetVal =
+        Function.getPPC64LocalEntryOffset() ? 3u : 0u;
+    const unsigned PPC64LEPOffset =
+        (LEPOffsetVal << ELF::STO_PPC64_LOCAL_BIT) &
+        ELF::STO_PPC64_LOCAL_MASK;
     for (MCSymbol *Symbol : Function.getSymbols()) {
       auto *ELFSym = static_cast<MCSymbolELF *>(Symbol);
       unsigned Other = ELFSym->getOther();
       Other &= ~ELF::STO_PPC64_LOCAL_MASK;
-      Other |= PPC64LEPOffset8;
+      Other |= PPC64LEPOffset;
       ELFSym->setOther(Other);
     }
   }
