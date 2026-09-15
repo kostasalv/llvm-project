@@ -114,96 +114,6 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
   return Error::success();
 }
 
-/// TEMP AUDIT: print every CallBranchDelta[RestoreTOC] edge whose computed
-/// displacement exceeds the 26-bit signed range, using REAL post-allocation
-/// addresses (this must run as a PostAllocationPass, after
-/// reassignSectionAddress, to see BOLT's final layout -- checking at
-/// PostPrune time sees only provisional JITLink-assigned addresses and
-/// never matches). Remove once diagnosed.
-Error auditCallBranchDeltaRange(jitlink::LinkGraph &G) {
-  // Build a global address->name map of ALL symbols in the graph once, so we
-  // can find the closest-preceding symbol to any failing instruction address
-  // (its real enclosing function), rather than dumping every symbol that
-  // happens to share the same JITLink Block.
-  std::vector<std::pair<uint64_t, StringRef>> AllSyms;
-  for (auto &Sec : G.sections())
-    for (auto *Sym : Sec.symbols())
-      if (Sym->hasName())
-        AllSyms.emplace_back(Sym->getAddress().getValue(), *Sym->getName());
-  llvm::sort(AllSyms);
-
-  auto closestSymbol = [&](uint64_t Addr) -> std::string {
-    auto It = llvm::upper_bound(
-        AllSyms, std::make_pair(Addr, StringRef()),
-        [](const auto &A, const auto &B) { return A.first < B.first; });
-    if (It == AllSyms.begin())
-      return "<none>";
-    --It;
-    return (It->second + "+0x" + Twine::utohexstr(Addr - It->first)).str();
-  };
-
-  unsigned Count = 0;
-  unsigned Delta14Count = 0;
-  for (auto *Block : G.blocks()) {
-    for (auto &Edge : Block->edges()) {
-      if (Edge.getKind() == jitlink::ppc64::Delta14) {
-        int64_t P = Block->getAddress().getValue() + Edge.getOffset();
-        int64_t S = Edge.getTarget().getAddress().getValue();
-        int64_t A = Edge.getAddend();
-        int64_t Value = S + A - P;
-        if (Value < -(1LL << 15) || Value >= (1LL << 15)) {
-          ++Delta14Count;
-          if (Delta14Count <= 20)
-            errs() << "AUDIT JITLink Delta14 (post-alloc): P=0x"
-                   << Twine::utohexstr(P) << " (" << closestSymbol(P) << ")"
-                   << " target(S+A)=0x" << Twine::utohexstr(S + A) << " ("
-                   << closestSymbol(S + A) << ")"
-                   << " dist=" << Value
-                   << " srcSection=" << Block->getSection().getName()
-                   << " tgtSym="
-                   << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
-                                                  : "<anon>")
-                   << " tgtExternal=" << Edge.getTarget().isExternal() << "\n";
-        }
-        continue;
-      }
-      if (Edge.getKind() != jitlink::ppc64::CallBranchDelta &&
-          Edge.getKind() != jitlink::ppc64::CallBranchDeltaRestoreTOC)
-        continue;
-      int64_t P = Block->getAddress().getValue() + Edge.getOffset();
-      int64_t S = Edge.getTarget().getAddress().getValue();
-      int64_t A = Edge.getAddend();
-      int64_t Value = S + A - P;
-      if (Value < -(1LL << 25) || Value >= (1LL << 25)) {
-        ++Count;
-        if (Count > 20) // cap verbose output; the count itself is printed below
-          continue;
-        errs() << "AUDIT JITLink CBD (post-alloc): kind="
-               << (Edge.getKind() == jitlink::ppc64::CallBranchDelta
-                       ? "CallBranchDelta"
-                       : "CallBranchDeltaRestoreTOC")
-               << " P=0x" << Twine::utohexstr(P) << " (" << closestSymbol(P)
-               << ")"
-               << " target(S+A)=0x" << Twine::utohexstr(S + A) << " ("
-               << closestSymbol(S + A) << ")"
-               << " dist=" << Value
-               << " srcSection=" << Block->getSection().getName()
-               << " tgtSym="
-               << (Edge.getTarget().hasName() ? *Edge.getTarget().getName()
-                                              : "<anon>")
-               << " tgtExternal=" << Edge.getTarget().isExternal() << "\n";
-      }
-    }
-  }
-  if (Count)
-    errs() << "AUDIT JITLink CBD (post-alloc): TOTAL out-of-range edges = "
-           << Count << "\n";
-  if (Delta14Count)
-    errs() << "AUDIT JITLink Delta14 (post-alloc): TOTAL out-of-range edges = "
-           << Delta14Count << "\n";
-  return Error::success();
-}
-
 } // anonymous namespace
 
 struct JITLinkLinker::Context : jitlink::JITLinkContext {
@@ -246,12 +156,6 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       this->Graph = &G;
       return Error::success();
     });
-    // TEMP AUDIT: runs after reassignSectionAddress above, so it sees BOLT's
-    // final addresses -- unlike ppc64DowngradeRestoreTOCIfNoNOP which is a
-    // PostPrunePass and only sees provisional JITLink addresses.
-    if (G.getTargetTriple().isPPC64())
-      Config.PostAllocationPasses.push_back(auditCallBranchDeltaRange);
-
     // PPC64 ELFv2: BOLT-rewritten functions hardcode r2 to the original
     // binary's TOC base.  JITLink's default PLT stubs (LongBranchSaveR2) use
     // TOC-relative (r2-relative) addressing to load the callee address from
