@@ -1029,7 +1029,37 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
     return false;
 
   if (isUnconditionalBranch(Last)) {
-    // Use getTargetSymbol() (which resolves the target via
+    // Check for a preceding conditional branch first: the canonical
+    // "bt cond, TargetA; b TargetB" two-instruction terminator idiom.
+    // BinaryBasicBlock::validateSuccessorInvariants()'s 2-successor case
+    // requires Tgt/TBB to be the CONDITIONAL branch's target and
+    // Fallthrough/FBB to be the UNCONDITIONAL branch's target (the
+    // unconditional branch stands in for the missing fallthrough here).
+    // Without this, a block ending in cond-branch+uncond-branch only ever
+    // reports the uncond branch as Tgt with no Fallthrough, which fails
+    // validateCFG() once getTargetSymbol() (below) correctly resolves a
+    // non-null target -- previously this path was masked because the old
+    // last-operand lookup often returned null and the whole block was
+    // treated as unanalyzable.
+    if (I != Begin) {
+      InstructionIterator Prev = I;
+      --Prev;
+      const MCInst &SecondLast = *Prev;
+      if (isConditionalBranch(SecondLast)) {
+        const MCSymbol *CondTgt = getTargetSymbol(SecondLast);
+        const MCSymbol *UncondTgt = getTargetSymbol(Last);
+        if (CondTgt && UncondTgt) {
+          Tgt = CondTgt;
+          Fallthrough = UncondTgt;
+          CondBr = const_cast<MCInst *>(&SecondLast);
+          UncondBr = const_cast<MCInst *>(&Last);
+          return true;
+        }
+      }
+    }
+
+    // Plain single unconditional branch, no fallthrough. Use
+    // getTargetSymbol() (which resolves the target via
     // getPCRelOperandNum()'s fixed, per-opcode operand index) instead of
     // grabbing "the last MCOperand" -- see the root-cause comment above
     // getTargetSymbol()'s definition for why the naive last-operand lookup
@@ -1040,7 +1070,6 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
     if (!Tgt)
       return false;
     UncondBr = const_cast<MCInst *>(&Last);
-    // with an unconditional branch, there's no fall-through
     return true;
   }
 
