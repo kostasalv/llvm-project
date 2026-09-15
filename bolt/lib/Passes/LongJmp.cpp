@@ -661,14 +661,6 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   const BinaryFunction &Func = *BB.getFunction();
   const BinaryContext &BC = Func.getBinaryContext();
   const MCSymbol *TgtSym = BC.MIB->getTargetSymbol(Inst);
-  // TEMP AUDIT: trace needsStub calls for the known-failing function to see
-  // exactly what TgtSym/isCall/mayNeedStub see at BOLT analysis time.
-  if (BC.isPPC64() && Func.getPrintName().find("IRTranslator") != std::string::npos &&
-      BC.MIB->isCall(Inst)) {
-    BC.errs() << "AUDIT needsStub: func=" << Func.getPrintName()
-              << " isCall=1 tgtSym="
-              << (TgtSym ? TgtSym->getName() : "<none>") << "\n";
-  }
   // PPC64: some direct branch variants (e.g. absolute BLA, or branches whose
   // target is an immediate not yet symbolized) may not yield a symbol.
   // These cannot be range-checked, so conservatively skip stub insertion.
@@ -754,20 +746,6 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
 
-  // TEMP AUDIT: trace needsStub's decision for cold conditional branches to
-  // see BOLT's own tentative-layout distance estimate vs. the final JITLink
-  // out-of-range failure (which uses real post-allocation addresses).
-  if (BC.isPPC64() && BC.MIB->isConditionalBranch(Inst) && BB.isCold()) {
-    bool WouldStub = PCOffset < MinVal || PCOffset > MaxVal;
-    BC.errs() << "AUDIT needsStub(cond,cold): func=" << Func.getPrintName()
-              << " DotAddress=0x" << Twine::utohexstr(DotAddress)
-              << " TgtSym=" << (TgtSym ? TgtSym->getName() : "<none>")
-              << " TgtBB=" << (TgtBB ? "yes" : "no")
-              << " PCRelTgtAddress=0x" << Twine::utohexstr(PCRelTgtAddress)
-              << " PCOffset=" << PCOffset
-              << " MinVal=" << MinVal << " MaxVal=" << MaxVal
-              << " WouldStub=" << WouldStub << "\n";
-  }
 
   // PPC64 ELFv2: reserve a small safety margin specifically for calls
   // (26-bit ±32MB `bl`).  BOLT's tentative layout (used here) and the actual
