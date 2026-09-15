@@ -34,18 +34,6 @@
 using namespace llvm;
 using namespace bolt;
 
-static const MCSymbol *getBranchTargetSymbol(const MCInst &I) {
-  // For B/BC the last operand is a branch target (expr)
-  if (I.getNumOperands() == 0)
-    return nullptr;
-  const MCOperand &Op = I.getOperand(I.getNumOperands() - 1);
-  if (!Op.isExpr())
-    return nullptr;
-  if (auto *SymRef = dyn_cast<MCSymbolRefExpr>(Op.getExpr()))
-    return &SymRef->getSymbol();
-  return nullptr;
-}
-
 static inline unsigned opc(const MCInst &I) { return I.getOpcode(); }
 
 void PPCMCPlusBuilder::createPushRegisters(MCInst &Inst1, MCInst &Inst2,
@@ -465,6 +453,31 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
   // getPCRelOperandNum (the same operand used by evaluateBranch).
   // This is needed by LongJmpPass::needsStub() which calls
   // getTargetSymbol(Inst) with the default OpNum=0 for all branch/call insns.
+  //
+  // Root cause this fixes for callers such as analyzeBranch(): a branch's
+  // target operand is NOT always the last MCOperand on the instruction.
+  // BOLT attaches extra state (e.g. execution-count/misprediction-count
+  // MCAnnotation operands, added once a profile is read -- see
+  // BinaryFunction::readProfileData / applyProfile-like sites) as trailing
+  // MCOperands on branch instructions. A naive "target = last operand"
+  // lookup (as a prior version of analyzeBranch() used, via a static local
+  // getBranchTargetSymbol() helper in this file) silently returns whatever
+  // trailing annotation operand happens to be last -- which is not an
+  // MCExpr, so it looks like "no target symbol" and analyzeBranch() reports
+  // the block as unanalyzable. BinaryFunction::fixBranches() then skips that
+  // block entirely instead of appending the corrective unconditional branch
+  // it needs after a later layout change (e.g. the second -split-functions
+  // run that happens after -reorder-functions, or -reorder-blocks). The
+  // block silently falls through into the bytes of whatever block the
+  // layout put next -- observed as a heap-corruption-shaped SIGSEGV deep in
+  // an unrelated DenseMap, because the fallen-through-into code overwrites
+  // registers (e.g. the hash/bucket-index computation in
+  // DenseMap::LookupBucketFor) without ever running.
+  //
+  // getPCRelOperandNum() below returns a FIXED, per-opcode operand index
+  // (e.g. 2 for gBC/BC's BD field) rather than "the last operand", so it is
+  // immune to trailing annotation operands and is the correct way to find
+  // a branch's target operand on this target.
   int PCRelOp = getPCRelOperandNum(Inst);
   if (PCRelOp < 0)
     return nullptr;
@@ -995,7 +1008,14 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
     return false;
 
   if (isUnconditionalBranch(Last)) {
-    Tgt = getBranchTargetSymbol(Last);
+    // Use getTargetSymbol() (which resolves the target via
+    // getPCRelOperandNum()'s fixed, per-opcode operand index) instead of
+    // grabbing "the last MCOperand" -- see the root-cause comment above
+    // getTargetSymbol()'s definition for why the naive last-operand lookup
+    // silently breaks once BOLT appends annotation operands (e.g. execution
+    // count/misprediction-count MCAnnotation operands added during/after
+    // profile attachment) after the real target operand.
+    Tgt = getTargetSymbol(Last);
     if (!Tgt)
       return false;
     UncondBr = const_cast<MCInst *>(&Last);
@@ -1004,7 +1024,9 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
   }
 
   if (isConditionalBranch(Last)) {
-    Tgt = getBranchTargetSymbol(Last);
+    // See the comment above the isUnconditionalBranch case: use
+    // getTargetSymbol(), not a last-operand lookup, for the same reason.
+    Tgt = getTargetSymbol(Last);
     if (!Tgt)
       return false;
     CondBr = const_cast<MCInst *>(&Last);
