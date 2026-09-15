@@ -776,9 +776,12 @@ bool PPCMCPlusBuilder::isUnconditionalBranch(const MCInst &I) const {
 }
 
 bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I) const {
-  // BC/BCC/gBC (and their linked forms) encode the branch condition in a
-  // BO/CR-bit style operand that MCPlusBuilder's generic infrastructure
-  // knows how to flip via reverseBranchCondition()/getInvertedCondCode().
+  // NOTE: no PPC64 conditional branch is actually reversible today -- see
+  // the "default:" case below. BC/BCC/gBC (and their linked forms) encode
+  // the branch condition in a BO/CR-bit style operand that COULD in
+  // principle be flipped via reverseBranchCondition()/getInvertedCondCode()
+  // if PPCMCPlusBuilder implemented them, but it doesn't yet, so this
+  // function must not report them as reversible.
   //
   // BDNZ/BDZ (and the rest of the family) are also conditional branches
   // (see isConditionalBranch() above), but their "condition" is implicit in
@@ -826,7 +829,23 @@ bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I) const {
   case PPC::BDZ8:
     return false;
   default:
-    return MCPlusBuilder::isReversibleBranch(I);
+    // BC/BCC/gBC and their linked/absolute forms reach here. In principle
+    // their BO/CR-bit condition operand could be flipped in place (that is
+    // what the comment above this function describes as the intended
+    // long-term design), but PPCMCPlusBuilder does not yet implement
+    // reverseBranchCondition()/getCondCode()/getInvertedCondCode() for any
+    // PPC64 opcode -- those all still hit the base MCPlusBuilder's
+    // llvm_unreachable("not implemented"). Falling through to
+    // MCPlusBuilder::isReversibleBranch(I) here (which just checks
+    // isDynamicBranch() and otherwise returns true) was therefore a lie:
+    // it told fixBranches()'s "swap successors to avoid an extra
+    // unconditional branch" optimization that reversal was safe, and it
+    // would crash the moment that optimization actually tried it. Return
+    // false unconditionally until real reversal support is implemented,
+    // matching the safe fallback already used above for the BDNZ/BDZ
+    // family -- fixBranches() will materialize an explicit unconditional
+    // branch for the non-fallthrough successor instead.
+    return false;
   }
 }
 
