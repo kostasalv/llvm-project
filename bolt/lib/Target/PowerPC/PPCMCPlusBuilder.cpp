@@ -494,10 +494,23 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
 }
 
 bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
+  // Root cause fixed here: this function must mark the instruction with
+  // setTailCall() so that isTailCall() (the base-class implementation,
+  // which just checks the kTailCall annotation -- PPC does not override
+  // it, matching X86/AArch64) actually recognizes it afterward. Without
+  // this call, every plain unconditional branch used as a tail call
+  // (e.g. "b <plt_call>" in _start, or any direct-branch tail call
+  // produced by the compiler) is indistinguishable from a normal
+  // intra-function branch to analyzeBranch()/the CFG builder: it gets
+  // UncondBr set with a target symbol pointing at code outside this
+  // function, and validateCFG() then fails because the block legitimately
+  // has zero local successors (it's an exit via tail call) while
+  // analyzeBranch() still reports a live UncondBr.
   switch (Inst.getOpcode()) {
   case PPC::B:
   case PPC::BA:
   case PPC::BCTR:
+    setTailCall(Inst);
     return true;
   default:
     return false;
@@ -634,11 +647,6 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   }
 }
 
-bool PPCMCPlusBuilder::isTailCall(const MCInst &I) const {
-  (void)I;
-  return false;
-}
-
 bool PPCMCPlusBuilder::isReturn(const MCInst &Inst) const {
   return Inst.getOpcode() == PPC::BLR;
 }
@@ -743,6 +751,19 @@ bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
 }
 
 bool PPCMCPlusBuilder::isUnconditionalBranch(const MCInst &I) const {
+  // Exclude tail calls here, mirroring the base MCPlusBuilder behavior
+  // (isUnconditionalBranch() there is "Analysis->isUnconditionalBranch(Inst)
+  // && !isTailCall(Inst)"). Without this exclusion, a tail-call branch
+  // (e.g. the plain 'b <plt_call>' at the end of _start, or any other
+  // direct-branch tail call produced by the compiler) is indistinguishable
+  // here from a normal intra-function unconditional branch: analyzeBranch()
+  // sets UncondBr with a target outside this function, but the block
+  // legitimately has zero local CFG successors (it exits via tail call),
+  // so BinaryBasicBlock::validateSuccessorInvariants() fails its
+  // Successors.size()==0 case (which requires UncondBr to be null) and
+  // postProcessBranches()'s validateCFG() assertion aborts BOLT.
+  if (isTailCall(I))
+    return false;
   switch (opc(I)) {
   case PPC::B:    // branch
   case PPC::BA:   // absolute branch
