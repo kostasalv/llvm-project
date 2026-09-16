@@ -2631,9 +2631,14 @@ Error BinaryFunction::buildCFG(MCPlusBuilder::AllocatorIdTy AllocatorId) {
       // fall-through.
       //
       // Conditional tail call is a special case since we don't add a taken
-      // branch successor for it.
+      // branch successor for it. Conditional return (e.g. PPC64's
+      // beqlr/bnelr/bdnzlr family -- see MCPlusBuilder::isConditionalReturn()'s
+      // doc comment) is the same kind of special case: the taken path
+      // returns to the caller with no local CFG successor, but the
+      // not-taken path is a genuine fallthrough, not a dead end.
       IsPrevFT = !MIB->isTerminator(*LastInstr) ||
-                 MIB->getConditionalTailCall(*LastInstr);
+                 MIB->getConditionalTailCall(*LastInstr) ||
+                 MIB->isConditionalReturn(*LastInstr);
     } else if (BB->succ_size() == 1) {
       IsPrevFT = MIB->isConditionalBranch(*LastInstr);
     } else {

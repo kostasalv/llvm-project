@@ -65,6 +65,14 @@ public:
   bool isConditionalBranch(const MCInst &Inst) const override;
   bool isUnconditionalBranch(const MCInst &Inst) const override;
 
+  /// PPC64's beqlr/bnelr/... (BCCLR), bclr/bclrn (BCLR/BCLRn/gBCLR), and
+  /// bdnzlr/bdzlr (BDNZLR/BDZLR family) are conditional returns: the taken
+  /// path returns to the caller via LR, the not-taken path falls through to
+  /// the next instruction. See isConditionalReturn()'s doc comment on the
+  /// base class for why generic CFG-building code needs this distinct from
+  /// isReturn()/isConditionalBranch().
+  bool isConditionalReturn(const MCInst &Inst) const override;
+
   /// BDNZ/BDNZL ("decrement CTR and branch if nonzero") are conditional on
   /// the CTR register and cannot be turned into their opposite-condition
   /// form (BDZ/BDZL) by a generic operand-preserving rewrite the way
