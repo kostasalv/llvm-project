@@ -595,6 +595,25 @@ public:
     return Analysis->isReturn(Inst);
   }
 
+  /// Return true if \p Inst is a conditional variant of a return
+  /// instruction, i.e. a terminator that returns to the caller when its
+  /// condition is true and otherwise falls through to the next instruction
+  /// in program order (rather than branching to an explicit target symbol).
+  ///
+  /// This is the "return" analogue of getConditionalTailCall(): both
+  /// describe a terminator with zero *local* CFG successors whose
+  /// not-taken path is nonetheless a genuine fallthrough edge, not a dead
+  /// end. Generic CFG-building code (see
+  /// BinaryFunction::buildCFG()'s fallthrough-successor-edge logic for
+  /// blocks with BB->succ_size() == 0) needs to know this to avoid treating
+  /// the fallthrough as unreachable and dropping it.
+  ///
+  /// Defaults to false; targets with conditional-return instructions (e.g.
+  /// PPC's beqlr/bnelr/bdnzlr family) must override this.
+  virtual bool isConditionalReturn(const MCInst &Inst) const {
+    return false;
+  }
+
   /// Returns the registers that are trusted at function entry.
   ///
   /// Each register should be treated as if a successfully authenticated

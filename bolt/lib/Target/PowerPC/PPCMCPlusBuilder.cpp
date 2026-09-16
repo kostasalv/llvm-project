@@ -651,6 +651,80 @@ bool PPCMCPlusBuilder::isReturn(const MCInst &Inst) const {
   return Inst.getOpcode() == PPC::BLR;
 }
 
+bool PPCMCPlusBuilder::isConditionalReturn(const MCInst &Inst) const {
+  // PPC64 has three families of "conditional return" instructions: the
+  // taken path returns to the caller via LR (no explicit branch-target
+  // operand at all -- the target is implicit in the LR register), and the
+  // not-taken path falls through to the next instruction in program order.
+  // None of isBranch()/isConditionalBranch()/isReturn() recognize these
+  // opcodes, which is the actual root cause this function exists to paper
+  // over: without it, BinaryFunction::buildCFG()'s fallthrough-successor
+  // logic for blocks with zero *branch* successors
+  // (`IsPrevFT = !MIB->isTerminator(*LastInstr) ||
+  // MIB->getConditionalTailCall(*LastInstr);` for the BB->succ_size() == 0
+  // case) sees isTerminator()==true (correctly -- see isTerminator()'s
+  // comment above) and getConditionalTailCall()==false, so it concludes
+  // IsPrevFT == false and never adds the fallthrough edge into the
+  // following block. The next block then looks unreachable from this one
+  // and, once physical block adjacency is disturbed by any layout pass
+  // (confirmed via -reorder-blocks=reverse, though the same corruption is
+  // silently latent under every other layout mode too since the CFG model
+  // itself is wrong, not just its printed layout), the not-taken path's
+  // real target is missing from the CFG entirely: BOLT emits nothing there,
+  // or worse emits an unrelated block, and the not-taken branch at runtime
+  // falls into whatever finalize-functions happened to place next --
+  // observed as a SIGSEGV inside unrelated PPC64 std/ld sequences whose
+  // register state came from a completely different, structurally-unrelated
+  // basic block (llvm::MachineRegisterInfo::moveOperands()'s "bdzlr; ...
+  // loop body ..." idiom, reduced from a 65000-function binary via bisection
+  // down to this exact instruction pattern).
+  //
+  // The three families, all "terminator, isReturn=1 in the .td, implicit
+  // LR target, BO field determines taken/not-taken":
+  //  - BCLR/BCLRn (explicit 5-bit BO field, "bclr 12/4, $BI, 0")
+  //  - BCCLR (extended mnemonics beqlr/bnelr/bltlr/bgtlr/blelr/bgelr/...,
+  //    by far the most common in real PPC64 binaries -- e.g. ~5900
+  //    occurrences vs. bdzlr's ~20 in a typical `llc` binary)
+  //  - gBCLR (the disassembler's generic "bclr $BO, $BI, $BH" form)
+  //  - BDZLR/BDNZLR and their probability-hint (+/-) variants (decrement
+  //    CTR, branch-to-LR if [not] zero -- the counted-loop-with-early-return
+  //    idiom; this is the specific family the bisection above landed on)
+  //
+  // Deliberately NOT included: the "L"-suffixed link-setting siblings
+  // (BCLRL/BCCLRL/gBCLRL/BDZLRL/BDNZLRL) — those write a new return address
+  // into LR on the taken path, making the taken path an indirect call
+  // through LR rather than a return, so they belong under isCall()'s
+  // indirect-call handling instead (not currently implemented either, but
+  // out of scope here: no compiler-generated code in the test corpus emits
+  // a conditional indirect call, unlike the four families above which are
+  // all common, naturally-occurring compiler output).
+  // Note on gBCLR: its BO field is a runtime 5-bit immediate rather than a
+  // fixed encoding, so it could in principle encode "branch always" (BO=20,
+  // equivalent to plain blr) if some non-compiler-generated code hand-encoded
+  // it that way instead of using the dedicated BLR opcode. Compiler output
+  // never does this (BLR's InstAlias always wins for BO=20), so this
+  // theoretical case is out of scope. Even if it occurred, misclassifying an
+  // always-taken branch as conditional only adds a spurious, never-executed
+  // fallthrough edge to the CFG -- comparatively harmless next to this
+  // function's actual purpose of not silently dropping a genuinely-taken
+  // fallthrough edge.
+  switch (opc(Inst)) {
+  case PPC::BCLR:
+  case PPC::BCLRn:
+  case PPC::BCCLR:
+  case PPC::gBCLR:
+  case PPC::BDZLR:
+  case PPC::BDNZLR:
+  case PPC::BDZLRp:
+  case PPC::BDNZLRp:
+  case PPC::BDZLRm:
+  case PPC::BDNZLRm:
+    return true;
+  default:
+    return false;
+  }
+}
+
 bool PPCMCPlusBuilder::isTerminator(const MCInst &Inst) const {
   // The base class implementation uses MCInstrAnalysis::isTerminator(), which
   // relies on the MCInstrDesc::isTerminator() bit.  PPC's gBC/gBCL (the MC
