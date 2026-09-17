@@ -1106,9 +1106,35 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
   if (Begin == End)
     return true;
 
-  // Look at the last instruction (canonical BOLT pattern)
+  // Look at the last instruction, skipping trailing pseudo instructions
+  // (CFI directives, debug-info annotations, etc). Functions with dense
+  // .eh_frame unwind info -- observed in clang's C++ static-initializer
+  // functions, which carry far more CFI than anything in llc's output --
+  // can have a block's real terminator followed by several CFI pseudo-ops
+  // (e.g. `bf 2, .LtmpA; b .LtmpB; !CFI OpRestore ...` x3). Without
+  // skipping them, `--I` from `End` lands on a CFI pseudo-op instead of
+  // the real branch; none of the branch-classification checks below match
+  // a CFI instruction, so this function would silently fall through to
+  // the "not a terminator, plain fallthrough" case at the bottom and
+  // report zero successors -- while BinaryFunction::buildCFG() (which
+  // correctly calls getLastNonPseudo() when building the CFG) had already
+  // assigned two real successors to this same block. That mismatch is
+  // exactly what BinaryBasicBlock::validateSuccessorInvariants()'s
+  // 2-successor case flags as an invalid CFG, crashing
+  // postProcessBranches()'s validateCFG() assertion. X86MCPlusBuilder's
+  // analyzeBranch() already skips pseudo instructions the same way; PPC's
+  // never did.
   InstructionIterator I = End;
-  --I;
+  while (I != Begin) {
+    --I;
+    if (!isPseudo(*I))
+      break;
+  }
+  if (isPseudo(*I)) {
+    // The block contains no real instructions at all (only pseudo-ops) --
+    // treat it like an empty block: analyzable, plain fallthrough.
+    return true;
+  }
   const MCInst &Last = *I;
 
   // Return (blr) -> no branch terminator, no successors. Analyzable.
@@ -1134,19 +1160,30 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
     // non-null target -- previously this path was masked because the old
     // last-operand lookup often returned null and the whole block was
     // treated as unanalyzable.
+    //
+    // As above, skip any pseudo instructions between the unconditional
+    // branch and the conditional branch that precedes it -- the same CFI
+    // gap that motivates skipping pseudo-ops when finding `Last` can in
+    // principle separate the two real terminator instructions too.
     if (I != Begin) {
       InstructionIterator Prev = I;
-      --Prev;
-      const MCInst &SecondLast = *Prev;
-      if (isConditionalBranch(SecondLast)) {
-        const MCSymbol *CondTgt = getTargetSymbol(SecondLast);
-        const MCSymbol *UncondTgt = getTargetSymbol(Last);
-        if (CondTgt && UncondTgt) {
-          Tgt = CondTgt;
-          Fallthrough = UncondTgt;
-          CondBr = const_cast<MCInst *>(&SecondLast);
-          UncondBr = const_cast<MCInst *>(&Last);
-          return true;
+      while (Prev != Begin) {
+        --Prev;
+        if (!isPseudo(*Prev))
+          break;
+      }
+      if (!isPseudo(*Prev)) {
+        const MCInst &SecondLast = *Prev;
+        if (isConditionalBranch(SecondLast)) {
+          const MCSymbol *CondTgt = getTargetSymbol(SecondLast);
+          const MCSymbol *UncondTgt = getTargetSymbol(Last);
+          if (CondTgt && UncondTgt) {
+            Tgt = CondTgt;
+            Fallthrough = UncondTgt;
+            CondBr = const_cast<MCInst *>(&SecondLast);
+            UncondBr = const_cast<MCInst *>(&Last);
+            return true;
+          }
         }
       }
     }
