@@ -3090,6 +3090,32 @@ void RewriteInstance::readBranchLTRelocations(BinarySection &BranchLTSection) {
   // readelf -r showing 1856 valid R_PPC64_RELATIVE entries in
   // '.rela.branch_lt' with correct sh_link/sh_info). Parse the raw
   // Elf64_Rela entries directly instead of relying on that API.
+  //
+  // NOTE: unlike readDynamicRelocations(), this function does NOT call
+  // BC->addDynamicRelocation() for the entries it finds. '.rela.branch_lt'
+  // is not part of PT_DYNAMIC/DT_RELA -- the dynamic loader never processes
+  // it at runtime, it exists purely so static tooling (like BOLT) knows
+  // which '.branch_lt' slots hold absolute function addresses that need
+  // patching if a function moves. Registering these as dynamic relocations
+  // would re-serialize all of them into the *output* '.rela.dyn' section in
+  // patchELFAllocatableRelaSections() -- a section the loader DOES read,
+  // whose capacity is fixed at whatever the original static link produced
+  // (e.g. exactly 1943 entries for a `clang` binary with no slack at all).
+  // A large binary's '.branch_lt' can easily contain more entries than that
+  // (clang-23: 8741) and overflow past '.rela.dyn's end the moment BOLT
+  // tries to write past entry #1943 -- observed as "BOLT-ERROR: Offset
+  // overflow for dynamic relocation". `llc`'s binary has no '.branch_lt'
+  // section at all (too small to need the long-jump lookup table), which is
+  // why this never surfaced in that binary's correctness sweep -- it's not
+  // llc-specific-safe, it's llc-never-exercised.
+  //
+  // The actual patching of '.branch_lt' entries whose target function moved
+  // happens directly, in place, in patchELFBranchLT() (mirroring how
+  // patchELFGOT() patches '.got' the same way) -- never via '.rela.dyn'.
+  // handleRelativeDynamicRelocation() below is still needed: it registers
+  // the referenced function's offset for internal CFG bookkeeping
+  // (ExternallyReferencedOffsets / InternalRefDataRelocations), independent
+  // of how the address gets physically patched at emission time.
   ErrorOr<BinarySection &> RelSectionOrErr =
       BC->getUniqueSectionByName(".rela.branch_lt");
   if (!RelSectionOrErr)
@@ -3118,7 +3144,6 @@ void RewriteInstance::readBranchLTRelocations(BinarySection &BranchLTSection) {
     }
 
     handleRelativeDynamicRelocation(Offset, Addend);
-    BC->addDynamicRelocation(Offset, nullptr, RType, Addend);
   }
 }
 
@@ -6476,7 +6501,12 @@ RewriteInstance::patchELFAllocatableRelaSections(ELFObjectFile<ELFT> *File) {
         }
 
         if (Offset + sizeof(NewRelA) > EndOffset) {
-          BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation\n";
+          BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation "
+                        "(IsJmpRel="
+                     << IsJmpRel << ", Offset=0x" << Twine::utohexstr(Offset)
+                     << ", EndOffset=0x" << Twine::utohexstr(EndOffset)
+                     << ", overflow bytes="
+                     << (Offset + sizeof(NewRelA) - EndOffset) << ")\n";
           exit(1);
         }
 
@@ -6539,6 +6569,50 @@ void RewriteInstance::patchELFGOT(ELFObjectFile<ELFT> *File) {
                         << Twine::utohexstr(NewAddress) << '\n');
       OS.pwrite(reinterpret_cast<const char *>(&NewAddress), sizeof(NewAddress),
                 reinterpret_cast<const char *>(GOTEntry) -
+                    File->getData().data());
+    }
+  }
+}
+
+template <typename ELFT>
+void RewriteInstance::patchELFBranchLT(ELFObjectFile<ELFT> *File) {
+  // PPC64 ELFv2: '.branch_lt' holds absolute GEP addresses read by
+  // '.plt_call.'/'.plt_branch.' long-jump trampolines (see
+  // readBranchLTRelocations()'s doc comment for the full rationale). Patch
+  // its entries directly in place, exactly like patchELFGOT() above patches
+  // '.got' -- never via '.rela.dyn': '.branch_lt' is not part of
+  // PT_DYNAMIC/DT_RELA, so the dynamic loader never reads it and BOLT must
+  // not register these as dynamic relocations (doing so would overflow the
+  // output '.rela.dyn' section's fixed original capacity once a binary is
+  // large enough to have a non-trivial '.branch_lt', as clang-23 is).
+  if (!BC->isPPC64())
+    return;
+
+  raw_fd_ostream &OS = Out->os();
+
+  SectionRef BranchLTSection;
+  for (const SectionRef &Section : File->sections()) {
+    StringRef SectionName = cantFail(Section.getName());
+    if (SectionName == ".branch_lt") {
+      BranchLTSection = Section;
+      break;
+    }
+  }
+  if (!BranchLTSection.getObject())
+    return;
+
+  StringRef BranchLTContents = cantFail(BranchLTSection.getContents());
+  for (const uint64_t *Entry =
+           reinterpret_cast<const uint64_t *>(BranchLTContents.data());
+       Entry < reinterpret_cast<const uint64_t *>(BranchLTContents.data() +
+                                                   BranchLTContents.size());
+       ++Entry) {
+    if (uint64_t NewAddress = getNewFunctionAddress(*Entry)) {
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching .branch_lt entry 0x"
+                        << Twine::utohexstr(*Entry) << " with 0x"
+                        << Twine::utohexstr(NewAddress) << '\n');
+      OS.pwrite(reinterpret_cast<const char *>(&NewAddress), sizeof(NewAddress),
+                reinterpret_cast<const char *>(Entry) -
                     File->getData().data());
     }
   }
@@ -7114,7 +7188,9 @@ void RewriteInstance::rewriteFile() {
     patchELFAllocatableRelaSections();
     patchELFAllocatableRelrSection();
     patchELFGOT();
+    patchELFBranchLT();
   }
+
 
   // PPC64 ELFv2: patch .init_array and .fini_array to use LEP (GEP+8)
   // for functions with a TOC-setup prologue. This is required for both

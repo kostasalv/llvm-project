@@ -354,6 +354,20 @@ private:
   /// Patch .got
   ELF_FUNCTION(void, patchELFGOT);
 
+  /// PPC64 ELFv2: patch '.branch_lt' entries (absolute GEP addresses used by
+  /// '.plt_call.'/'.plt_branch.' long-jump trampolines) directly in place,
+  /// the same way patchELFGOT() patches '.got' entries. '.branch_lt' is a
+  /// linker-generated table that is NOT part of PT_DYNAMIC/DT_RELA -- its
+  /// '.rela.branch_lt' companion section only exists for static tooling to
+  /// know which slots hold function addresses; the dynamic loader never
+  /// processes it at runtime. Relocating it via BC->addDynamicRelocation()
+  /// (as an earlier version of this port did) re-serializes every one of
+  /// its entries into the *output* '.rela.dyn' section instead, which the
+  /// loader does read -- overflowing '.rela.dyn's fixed original capacity
+  /// once a binary is large enough to need a non-trivial '.branch_lt' (see
+  /// readBranchLTRelocations()'s doc comment for the full story).
+  ELF_FUNCTION(void, patchELFBranchLT);
+
   /// PPC64 ELFv2: patch .init_array and .fini_array entries to use the Local
   /// Entry Point (GEP+8) instead of the Global Entry Point for functions that
   /// begin with the TOC-setup prologue (addis r2,r12,N; addi r2,r2,M).
