@@ -77,7 +77,8 @@ public:
   /// the CTR register and cannot be turned into their opposite-condition
   /// form (BDZ/BDZL) by a generic operand-preserving rewrite the way
   /// BC's BO field can be flipped -- see reverseBranchCondition().
-  bool isReversibleBranch(const MCInst &Inst) const override;
+  bool isReversibleBranch(const MCInst &Inst,
+                          bool MustPreserveFlags = true) const override;
 
   const MCInst *getConditionalTailCall(const MCInst &Inst) const;
 

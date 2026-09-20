@@ -6938,10 +6938,10 @@ void RewriteInstance::patchELFFuncArraysPPC64(ELFObjectFile<ELFT> *File) {
       uint64_t FileOffset =
           reinterpret_cast<const char *>(Contents.data() + Offset) - Data;
       if (IsLE) {
-        uint64_t LE = support::endian::byte_swap<uint64_t, llvm::endianness::little>(NewGEP);
+        uint64_t LE = support::endian::byte_swap<uint64_t>(NewGEP, llvm::endianness::little);
         OS.pwrite(reinterpret_cast<const char *>(&LE), EntrySize, FileOffset);
       } else {
-        uint64_t BE = support::endian::byte_swap<uint64_t, llvm::endianness::big>(NewGEP);
+        uint64_t BE = support::endian::byte_swap<uint64_t>(NewGEP, llvm::endianness::big);
         OS.pwrite(reinterpret_cast<const char *>(&BE), EntrySize, FileOffset);
       }
     }
