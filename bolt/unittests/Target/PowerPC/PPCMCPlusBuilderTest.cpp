@@ -115,6 +115,9 @@ protected:
   MCInst makeCondBranch(StringRef TargetName = "target_sym") {
     MCInst I;
     I.setOpcode(PPC::BC);
+    // BC operands: BO (branch options), BI (CR bit), BD (target)
+    // BO=12: branch if CR bit is set (true)
+    I.addOperand(MCOperand::createImm(12));
     I.addOperand(MCOperand::createReg(PPC::CR0LT));
     MCSymbol *Sym = BC->Ctx->getOrCreateSymbol(TargetName);
     I.addOperand(MCOperand::createExpr(MCSymbolRefExpr::create(Sym, *BC->Ctx)));
