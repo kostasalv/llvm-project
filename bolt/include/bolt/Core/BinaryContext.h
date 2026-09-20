@@ -706,6 +706,11 @@ public:
   /// Symbolic disassembler.
   std::unique_ptr<MCDisassembler> SymbolicDisAsm;
 
+  /// MC target options used by backend creation.
+  /// Must be a member to ensure lifetime extends beyond MCAsmBackend creation,
+  /// as some backends (e.g., RISC-V) store a reference to these options.
+  MCTargetOptions MCOptions;
+
   std::unique_ptr<MCAsmBackend> MAB;
 
   /// Allows BOLT to print to log whenever it is necessary (with or without
@@ -1632,7 +1637,7 @@ public:
   createStreamer(llvm::raw_pwrite_stream &OS) const {
     MCCodeEmitter *MCE = TheTarget->createMCCodeEmitter(*MII, *Ctx);
     MCAsmBackend *MAB =
-        TheTarget->createMCAsmBackend(*STI, *MRI, MCTargetOptions());
+        TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
     std::unique_ptr<MCObjectWriter> OW = MAB->createObjectWriter(OS);
     std::unique_ptr<MCStreamer> Streamer(TheTarget->createMCObjectStreamer(
         *TheTriple, *Ctx, std::unique_ptr<MCAsmBackend>(MAB), std::move(OW),

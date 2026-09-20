@@ -320,7 +320,7 @@ Expected<std::unique_ptr<BinaryContext>> BinaryContext::createBinaryContext(
     BC->UseLargeCodeModel = opts::LargeCodeModel;
 
   BC->MAB = std::unique_ptr<MCAsmBackend>(
-      BC->TheTarget->createMCAsmBackend(*BC->STI, *BC->MRI, MCTargetOptions()));
+      BC->TheTarget->createMCAsmBackend(*BC->STI, *BC->MRI, BC->MCOptions));
 
   BC->setFilename(InputFileName);
 
@@ -2745,7 +2745,7 @@ BinaryContext::calculateEmittedSize(BinaryFunction &BF, bool FixBranches) {
   IndependentCodeEmitter MCEInstance = createIndependentMCCodeEmitter();
   MCContext *LocalCtx = MCEInstance.LocalCtx.get();
   MCAsmBackend *MAB =
-      TheTarget->createMCAsmBackend(*STI, *MRI, MCTargetOptions());
+      TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
 
   SmallString<256> Code;
   raw_svector_ostream VecOS(Code);
