@@ -1315,7 +1315,9 @@ DataAggregator::getFallthroughsInTrace(BinaryFunction &BF, const Trace &Trace,
 
 ErrorOr<DataAggregator::LBREntry> DataAggregator::parseLBREntry() {
   /// perf script -F brstack entry format:
-  /// FROM/TO/EVENT/INTX/ABORT/CYCLES/TYPE/SPEC
+  /// FROM/TO/EVENT/INTX/ABORT/CYCLES[/TYPE[/SPEC]]
+  /// TYPE and SPEC are only emitted by Linux 5.18 and later, and only when the
+  /// hardware reports branch type information.
   LBREntry Res;
   // From
   ErrorOr<StringRef> FromStrRes = parseString('/');
@@ -1371,28 +1373,28 @@ ErrorOr<DataAggregator::LBREntry> DataAggregator::parseLBREntry() {
     MispredWarning = false;
   }
 
-  // Transaction, abort, cycles
-  for (unsigned I = 0; I < 3; ++I) {
-    ErrorOr<StringRef> IgnoredStr = parseString('/');
-    if (std::error_code EC = IgnoredStr.getError())
-      return EC;
+  // Parse the remaining subfields as a single entry-bounded field and split it
+  // locally. Their number depends on the perf version and the hardware, so
+  // reading them one '/' at a time would walk past the end of a short entry
+  // and silently consume the following one.
+  ErrorOr<StringRef> RestRes = parseString(FieldSeparator, /*EndNl=*/true);
+  if (std::error_code EC = RestRes.getError())
+    return EC;
+  StringRef Rest = RestRes.get();
+
+  SmallVector<StringRef, 5> Subfields;
+  Rest.split(Subfields, '/');
+  // INTX/ABORT/CYCLES are always present. TYPE and SPEC were added in Linux
+  // 5.18 and are absent on older perf and on hardware that does not report
+  // branch type (e.g. POWER BHRB).
+  if (Subfields.size() < 3) {
+    reportError("expected rest of brstack entry");
+    Diag << "Found: " << Rest << "\n";
+    return make_error_code(llvm::errc::io_error);
   }
 
   // Type: COND/UNCOND/IND/CALL/IND_CALL/RET
-  ErrorOr<StringRef> TypeStr = parseString('/');
-  if (std::error_code EC = TypeStr.getError())
-    return EC;
-  Res.IsReturn = TypeStr.get() == "RET";
-
-  // Branch speculation
-  ErrorOr<StringRef> Rest = parseString(FieldSeparator, true);
-  if (std::error_code EC = Rest.getError())
-    return EC;
-  if (Rest.get().size() < 1) {
-    reportError("expected rest of brstack entry");
-    Diag << "Found: " << Rest.get() << "\n";
-    return make_error_code(llvm::errc::io_error);
-  }
+  Res.IsReturn = Subfields.size() >= 4 && Subfields[3] == "RET";
   return Res;
 }
 

@@ -25,20 +25,50 @@ namespace llvm {
 namespace bolt {
 
 /// Test helper with friend access to DataAggregator internals.
-/// Used for both parseHexField tests (no BC needed) and pre-aggregated
-/// parsing tests (BC needed, X86-only).
+/// Used for parseHexField and parseLBREntry tests (no BC needed) and
+/// pre-aggregated parsing tests (BC needed, X86-only).
 struct PreAggregatedTestHelper : public testing::Test {
   void SetUp() override { opts::ReadPreAggregated = true; }
 
 protected:
   using Trace = DataAggregator::Trace;
   using TakenBranchInfo = DataAggregator::TakenBranchInfo;
+  using LBREntry = DataAggregator::LBREntry;
 
   /// Parse a hex field from input string.
   ErrorOr<uint64_t> parseHex(StringRef Input) {
     DataAggregator DA("<pseudo input>");
     DA.setParsingBuffer(Input);
     return DA.parseHexField(' ', /*EndNl=*/true);
+  }
+
+  /// Parse every `perf script -F brstack` entry in \p Input, which may span
+  /// multiple lines. Stops at the first parse error and reports how much of
+  /// the buffer was left unconsumed, so that an entry running past its own
+  /// end-of-line is visible to the test.
+  struct LBRParseResult {
+    std::vector<LBREntry> Entries;
+    bool Failed = false;
+    size_t Remaining = 0;
+  };
+
+  LBRParseResult parseLBREntries(StringRef Input) {
+    LBRParseResult Result;
+    DataAggregator DA("<pseudo input>");
+    DA.setParsingBuffer(Input);
+    while (!DA.ParsingBuf.empty()) {
+      if (DA.checkAndConsumeNewLine())
+        continue;
+      DA.checkAndConsumeFS();
+      ErrorOr<LBREntry> Res = DA.parseLBREntry();
+      if (!Res) {
+        Result.Failed = true;
+        break;
+      }
+      Result.Entries.push_back(Res.get());
+    }
+    Result.Remaining = DA.ParsingBuf.size();
+    return Result;
   }
 
   /// Parse pre-aggregated input and return collected Traces.
@@ -148,6 +178,80 @@ TEST_F(PreAggregatedTestHelper, parseHexField) {
   Res = parseHex("0\n");
   ASSERT_TRUE(!!Res);
   EXPECT_EQ(*Res, 0ULL);
+}
+
+TEST_F(PreAggregatedTestHelper, parseLBREntryWithBranchType) {
+  // Linux 5.18 and later emit FROM/TO/EVENT/INTX/ABORT/CYCLES/TYPE/SPEC.
+  auto Res = parseLBREntries("0xa001/0xa002/P/-/-/10/COND/-\n"
+                             "0xb001/0xb002/M/-/-/4/RET/-\n"
+                             "0xc001/0xc002/P/-/-/13//-\n");
+  ASSERT_FALSE(Res.Failed);
+  ASSERT_EQ(Res.Entries.size(), 3u);
+
+  EXPECT_EQ(Res.Entries[0].From, 0xa001ULL);
+  EXPECT_EQ(Res.Entries[0].To, 0xa002ULL);
+  EXPECT_FALSE(Res.Entries[0].Mispred);
+  EXPECT_FALSE(Res.Entries[0].IsReturn);
+
+  EXPECT_EQ(Res.Entries[1].From, 0xb001ULL);
+  EXPECT_EQ(Res.Entries[1].To, 0xb002ULL);
+  EXPECT_TRUE(Res.Entries[1].Mispred);
+  EXPECT_TRUE(Res.Entries[1].IsReturn);
+
+  // Empty TYPE field: branch type is unknown, not a return.
+  EXPECT_EQ(Res.Entries[2].From, 0xc001ULL);
+  EXPECT_FALSE(Res.Entries[2].IsReturn);
+}
+
+TEST_F(PreAggregatedTestHelper, parseLBREntryWithoutBranchType) {
+  // Older perf and hardware that does not report branch type (e.g. POWER
+  // BHRB, observed with perf 4.18 on ppc64le) emit only six subfields:
+  // FROM/TO/EVENT/INTX/ABORT/CYCLES. Each entry must still be parsed on its
+  // own line rather than consuming the following one.
+  auto Res = parseLBREntries("0xa001/0xa002/P/-/-/10\n"
+                             "0xb001/0xb002/M/-/-/4\n"
+                             "0xc001/0xc002/-/-/-/0\n");
+  ASSERT_FALSE(Res.Failed);
+  ASSERT_EQ(Res.Entries.size(), 3u);
+
+  EXPECT_EQ(Res.Entries[0].From, 0xa001ULL);
+  EXPECT_EQ(Res.Entries[0].To, 0xa002ULL);
+  EXPECT_FALSE(Res.Entries[0].Mispred);
+  EXPECT_FALSE(Res.Entries[0].IsReturn);
+
+  EXPECT_EQ(Res.Entries[1].From, 0xb001ULL);
+  EXPECT_EQ(Res.Entries[1].To, 0xb002ULL);
+  EXPECT_TRUE(Res.Entries[1].Mispred);
+  EXPECT_FALSE(Res.Entries[1].IsReturn);
+
+  // Missing misprediction bit is accepted.
+  EXPECT_EQ(Res.Entries[2].From, 0xc001ULL);
+  EXPECT_EQ(Res.Entries[2].To, 0xc002ULL);
+  EXPECT_FALSE(Res.Entries[2].Mispred);
+
+  EXPECT_EQ(Res.Remaining, 0u);
+}
+
+TEST_F(PreAggregatedTestHelper, parseLBREntryMultiplePerLine) {
+  // A branch stack puts several entries on one line, separated by spaces.
+  auto Res = parseLBREntries("0xa001/0xa002/P/-/-/10 0xb001/0xb002/M/-/-/4\n"
+                             "0xc001/0xc002/P/-/-/13/RET/-\n");
+  ASSERT_FALSE(Res.Failed);
+  ASSERT_EQ(Res.Entries.size(), 3u);
+  EXPECT_EQ(Res.Entries[0].From, 0xa001ULL);
+  EXPECT_EQ(Res.Entries[1].From, 0xb001ULL);
+  EXPECT_TRUE(Res.Entries[1].Mispred);
+  EXPECT_EQ(Res.Entries[2].From, 0xc001ULL);
+  EXPECT_TRUE(Res.Entries[2].IsReturn);
+}
+
+TEST_F(PreAggregatedTestHelper, parseLBREntryTooFewSubfields) {
+  // Fewer than INTX/ABORT/CYCLES is malformed and must be rejected at the end
+  // of the entry rather than by running into the next one.
+  auto Res = parseLBREntries("0xa001/0xa002/P/-\n"
+                             "0xb001/0xb002/P/-/-/4\n");
+  EXPECT_TRUE(Res.Failed);
+  EXPECT_TRUE(Res.Entries.empty());
 }
 
 #ifdef X86_AVAILABLE
