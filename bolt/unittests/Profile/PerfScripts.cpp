@@ -126,6 +126,11 @@ protected:
   }
 };
 
+// The suite is only instantiated for X86 and AArch64 below. On a build
+// configured for neither (e.g. BOLT_TARGETS_TO_BUILD=PowerPC) it has no
+// instantiations, which gtest otherwise reports as a test failure.
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(PerfScriptTestHelper);
+
 } // namespace bolt
 } // namespace llvm
 
