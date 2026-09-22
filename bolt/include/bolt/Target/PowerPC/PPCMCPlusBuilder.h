@@ -134,12 +134,6 @@ public:
 
   bool ensureCallNOPSlot(MCInst &Inst) const override;
 
-  // Build a PPC64 call-stub as MCInsts; the stub tail-calls Target via CTR.
-  // Out will receive: [std r2,24(r1)] (optional), address materialization into
-  // r12, mtctr r12, bctr. No @toc* fixups are used.
-  void buildCallStubAbsolute(MCContext *Ctx, const MCSymbol *TargetSym,
-                             std::vector<MCInst> &Out) const;
-
   // Build a TOC-independent PPC64 PLT call stub that loads the callee address
   // directly from a known absolute GOT slot address (e.g. a .plt entry filled
   // by the dynamic linker).  This avoids going through the original PLT thunk
