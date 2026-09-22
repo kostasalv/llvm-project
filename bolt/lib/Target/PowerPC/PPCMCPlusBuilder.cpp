@@ -279,7 +279,7 @@ void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
   //
   // r12 is the ELFv2 ABI "function entry address" register used by GEP
   // prologues to reconstruct r2/TOC, so reusing it here is ABI-correct.
-  // Same instruction sequence as buildCallStubAbsolute().
+  // Same materialization sequence is used by the PLT call stubs below.
   const unsigned R12 = PPC::X12;
 
   const MCExpr *HST = MCSymbolRefExpr::create(Target, PPC::S_HIGHEST, *Ctx);
@@ -1585,104 +1585,6 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
 }
 
 static inline MCOperand R(unsigned Reg) { return MCOperand::createReg(Reg); }
-
-// Build a 64-bit absolute address of the callee's function address (e.g.
-// "puts") into r12, then tail-call it via BCTR.
-void PPCMCPlusBuilder::buildCallStubAbsolute(MCContext *Ctx,
-                                             const MCSymbol *Target,
-                                             std::vector<MCInst> &Out) const {
-  Out.clear();
-  // --- Absolute 64-bit materialization of Target into r12 (no TOC/r2) ---
-  // r12 = Target, assembled from four 16-bit pieces via logical ORs.
-  const unsigned R12 = PPC::X12;
-
-  const MCExpr *HST =
-      MCSymbolRefExpr::create(Target, PPC::S_HIGHEST, *Ctx); // bits 48..63
-  const MCExpr *HER =
-      MCSymbolRefExpr::create(Target, PPC::S_HIGHER, *Ctx); // bits 32..47
-  const MCExpr *HI =
-      MCSymbolRefExpr::create(Target, PPC::S_HI, *Ctx); // bits 16..31  (@h)
-  const MCExpr *LO =
-      MCSymbolRefExpr::create(Target, PPC::S_LO, *Ctx); // bits 0..15   (@l)
-
-  MCInst I;
-
-  // std r2, 24(r1)      ; save caller's TOC
-  I = MCInst();
-  I.setOpcode(PPC::STD);
-  I.addOperand(R(PPC::X2)); // reg (src)
-  I.addOperand(MCOperand::createExpr(
-      MCConstantExpr::create(24, *Ctx))); // disp (slot #1)
-  I.addOperand(R(PPC::X1));               // base (slot #2)
-  Out.push_back(I);
-
-  // lis    r12, Target@highest         ; r12 = highest << 16
-  I = MCInst();
-  I.setOpcode(PPC::LIS8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HST));
-  Out.push_back(I);
-
-  // ori    r12, r12, Target@higher     ; r12 |= higher
-  I = MCInst();
-  I.setOpcode(PPC::ORI8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HER));
-  Out.push_back(I);
-
-  // rldicr r12, r12, 32, 31            ; shift the top 32 bits up
-  I = MCInst();
-  I.setOpcode(PPC::RLDICR);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createImm(32)); // shift amount
-  I.addOperand(MCOperand::createImm(
-      31)); // mask end (MB..ME semantics from PPCInstrInfo.cpp:3470)
-  Out.push_back(I);
-
-  // oris   r12, r12, Target@h          ; r12 |= (high << 16)
-  I = MCInst();
-  I.setOpcode(PPC::ORIS8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HI));
-  Out.push_back(I);
-
-  // ori    r12, r12, Target@l          ; r12 |= low
-  I = MCInst();
-  I.setOpcode(PPC::ORI8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(LO));
-  Out.push_back(I);
-  // --- r12 now holds the absolute address of Target ---
-
-  // mtctr r12
-  I = MCInst();
-  I.setOpcode(PPC::MTCTR8);
-  I.addOperand(R(R12));
-  Out.push_back(I);
-
-  // bctrl               ; link-return to stub
-  I = MCInst();
-  I.setOpcode(PPC::BCTRL);
-  Out.push_back(I);
-
-  // ld r2, 24(r1)       ; restore TOC
-  I = MCInst();
-  I.setOpcode(PPC::LD);
-  I.addOperand(R(PPC::X2)); // reg (dst)
-  I.addOperand(MCOperand::createExpr(
-      MCConstantExpr::create(24, *Ctx))); // disp (slot #1)
-  I.addOperand(R(PPC::X1));               // base (slot #2)
-  Out.push_back(I);
-
-  // blr                 ; return to caller
-  I = MCInst();
-  I.setOpcode(PPC::BLR8); // or PPC::BLR on some trees
-  Out.push_back(I);
-}
 
 void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
                                             uint64_t GotSlotAddress,
