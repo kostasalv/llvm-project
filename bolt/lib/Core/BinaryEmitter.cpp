@@ -16,9 +16,9 @@
 #include "bolt/Core/BinaryFunction.h"
 #include "bolt/Core/DebugData.h"
 #include "bolt/Core/FunctionLayout.h"
-#include "bolt/Target/PowerPC/PPCMCPlusBuilder.h"
 #include "bolt/Utils/CommandLineOpts.h"
 #include "bolt/Utils/Utils.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/DebugInfo/DWARF/DWARFCompileUnit.h"
 #include "llvm/MC/MCSection.h"
@@ -1260,15 +1260,29 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
 
     StringRef Prefix = Section.hasSectionRef() ? OrgSecPrefix : "";
     std::string OutName = (Prefix + Section.getName()).str();
-    // PPC64: drop relocations before emitting sections that contain raw
-    // original binary content. These sections are emitted verbatim and their
-    // R_PPC64_REL24 call relocations cannot be handled correctly by JITLink
-    // (the post-call slot contains real code, not a NOP placeholder).
-    // Drop all relocations from all data sections on PPC64 - they refer to
-    // original binary addresses that JITLink cannot resolve correctly after
-    // code has been relocated to new addresses.
-    if (BC.isPPC64())
-      Section.clearRelocations();
+    // PPC64 raw data may contain linker-generated branch stubs. Their
+    // REL24/REL14 relocations describe instructions in the original layout,
+    // and JITLink cannot safely reapply them after those instructions have
+    // been emitted as data. Keep ordinary data relocations: function pointers,
+    // jump tables, and vtables still need to be updated when code moves.
+    if (BC.isPPC64()) {
+      SmallVector<uint64_t, 4> UnsupportedOffsets;
+      for (const Relocation &Rel : Section.relocations()) {
+        switch (Rel.Type) {
+        case ELF::R_PPC64_REL14:
+        case ELF::R_PPC64_REL14_BRTAKEN:
+        case ELF::R_PPC64_REL14_BRNTAKEN:
+        case ELF::R_PPC64_REL24:
+        case ELF::R_PPC64_REL24_NOTOC:
+          UnsupportedOffsets.push_back(Rel.Offset);
+          break;
+        default:
+          break;
+        }
+      }
+      for (uint64_t Offset : UnsupportedOffsets)
+        Section.removeRelocationAt(Offset);
+    }
     Section.emitAsData(Streamer, OutName);
     Section.clearRelocations();
   }
