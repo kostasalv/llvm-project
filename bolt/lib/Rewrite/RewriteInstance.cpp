@@ -2119,6 +2119,12 @@ void RewriteInstance::disassemblePLTSectionX86(BinarySection &Section,
 }
 
 void RewriteInstance::disassemblePLTSectionPPC64(BinarySection &Section) {
+  // The ELFv2 .plt section is commonly SHT_NOBITS: the dynamic linker
+  // materializes its descriptors at load time, so there are no bytes for BOLT
+  // to disassemble. Only inspect byte-backed PLT sections such as .iplt.
+  if (Section.isVirtual() || Section.getContents().empty())
+    return;
+
   const uint64_t Base = Section.getAddress();
   const uint64_t Size = Section.getSize();
 
