@@ -1136,6 +1136,9 @@ bool Relocation::isIRelative(uint32_t Type) {
     llvm_unreachable("not implemented");
   case Triple::x86_64:
     return Type == ELF::R_X86_64_IRELATIVE;
+  case Triple::ppc64:
+  case Triple::ppc64le:
+    return Type == ELF::R_PPC64_IRELATIVE;
   }
 }
 
