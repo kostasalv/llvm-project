@@ -2210,6 +2210,11 @@ void RewriteInstance::disassemblePLT() {
 
     analyzeOnePLTSection(Section, PLTSI->EntrySize);
 
+    // A virtual ELFv2 PLT has no bytes and therefore no BOLT function to
+    // register. The dynamic loader materializes its descriptors at runtime.
+    if (Section.isVirtual() || Section.getContents().empty())
+      continue;
+
     BinaryFunction *PltBF;
     auto BFIter = BC->getBinaryFunctions().find(Section.getAddress());
     if (BFIter != BC->getBinaryFunctions().end()) {
