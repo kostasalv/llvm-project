@@ -633,6 +633,10 @@ private:
   const PLTSectionInfo RISCV_PLTSections[3] = {
       {".plt", 16}, {".iplt", 16}, {nullptr}};
 
+  /// PPC64 ELFv2 PLT sections.
+  const PLTSectionInfo PPC64_PLTSections[3] = {{".plt"}, {".iplt"},
+                                                {nullptr}};
+
   /// Return PLT information for a section with \p SectionName or nullptr
   /// if the section is not PLT.
   const PLTSectionInfo *getPLTSectionInfo(StringRef SectionName) {
@@ -648,6 +652,10 @@ private:
       break;
     case Triple::riscv64:
       PLTSI = RISCV_PLTSections;
+      break;
+    case Triple::ppc64:
+    case Triple::ppc64le:
+      PLTSI = PPC64_PLTSections;
       break;
     }
     for (; PLTSI && PLTSI->Name; ++PLTSI)
