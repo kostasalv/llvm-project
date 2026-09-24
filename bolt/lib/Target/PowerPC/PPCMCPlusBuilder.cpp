@@ -264,6 +264,79 @@ int PPCMCPlusBuilder::getUncondBranchEncodingSize() const { return 26; }
 // relaxation path in LongJmpPass::relaxStub is effectively skipped.
 int PPCMCPlusBuilder::getShortJmpEncodingSize() const { return 26; }
 
+bool PPCMCPlusBuilder::replaceImmWithSymbolRef(MCInst &Inst,
+                                               const MCSymbol *Symbol,
+                                               int64_t Addend, MCContext *Ctx,
+                                               int64_t &Value,
+                                               uint32_t RelType) const {
+  // Only the PC-relative half16 family is handled here. Those immediates hold
+  // ha()/hi()/lo() of a displacement from the address of the instruction that
+  // carries them, so they have to be re-expressed against wherever BOLT emits
+  // the instruction rather than copied. The ELFv2 global entry point preamble
+  // is the ubiquitous case:
+  //
+  //   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+  //   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+  //
+  // Everything else is either a branch (symbolized from its target during
+  // disassembly) or TOC/GOT-relative, which survives the move untouched
+  // because neither r2 nor the TOC changes. Report those as not replaced.
+  PPC::Specifier Spec;
+  switch (RelType) {
+  default:
+    return false;
+  case ELF::R_PPC64_REL16:
+    Spec = PPC::S_None;
+    break;
+  case ELF::R_PPC64_REL16_LO:
+    Spec = PPC::S_LO;
+    break;
+  case ELF::R_PPC64_REL16_HI:
+    Spec = PPC::S_HI;
+    break;
+  case ELF::R_PPC64_REL16_HA:
+    Spec = PPC::S_HA;
+    break;
+  }
+
+  // Locate the immediate field. The half16 forms land on addis/addi/ori-style
+  // instructions, which carry exactly one immediate; bail out rather than guess
+  // if that is not the shape we got.
+  const unsigned NumOperands = MCPlus::getNumPrimeOperands(Inst);
+  unsigned OpIdx = NumOperands;
+  for (unsigned I = 0; I != NumOperands; ++I) {
+    if (!Inst.getOperand(I).isImm())
+      continue;
+    if (OpIdx != NumOperands)
+      return false;
+    OpIdx = I;
+  }
+  if (OpIdx == NumOperands)
+    return false;
+
+  // Build (Symbol + Addend - L)@spec, with L a label emitted immediately before
+  // this instruction (see BinaryEmitter's getInstLabel handling). That is the
+  // relocation's own definition, S + A - P, with L standing in for P, so it
+  // stays correct at any output address. For the preamble above it yields
+  // (.TOC. + 0 - func) on the addis and (.TOC. + 4 - (func + 4)) on the addi,
+  // i.e. the same .TOC. - func displacement in both - and the assembler
+  // re-emits R_PPC64_REL16_HA/_LO against .TOC., which JITLink resolves as
+  // Delta16HA/Delta16LO once the final layout is known.
+  MCSymbol *Label = getOrCreateInstLabel(Inst, "PPCPCRel", Ctx);
+  const MCExpr *Ref = MCSymbolRefExpr::create(Symbol, *Ctx);
+  if (Addend)
+    Ref = MCBinaryExpr::createAdd(Ref, MCConstantExpr::create(Addend, *Ctx),
+                                  *Ctx);
+  const MCExpr *Expr =
+      MCBinaryExpr::createSub(Ref, MCSymbolRefExpr::create(Label, *Ctx), *Ctx);
+  if (Spec != PPC::S_None)
+    Expr = MCSpecifierExpr::create(Expr, Spec, *Ctx);
+
+  Inst.getOperand(OpIdx) = MCOperand::createExpr(Expr);
+  Value = 0;
+  return true;
+}
+
 void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
                                      const MCSymbol *Target, MCContext *Ctx,
                                      bool IsTailCall) {

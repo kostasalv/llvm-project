@@ -157,6 +157,20 @@ static bool isSupportedPPC64(uint32_t Type) {
   case ELF::R_PPC64_REL14_BRNTAKEN:
   case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL32:
+  // The ELFv2 global entry point recomputes the TOC pointer from r12 with a
+  // PC-relative half16 pair, so these appear in the first two instructions of
+  // essentially every global function:
+  //
+  //   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+  //   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+  //
+  // They must be recognized here so that they are symbolized rather than
+  // dropped: an unsymbolized immediate is copied verbatim to the function's
+  // new address and computes a garbage TOC base.
+  case ELF::R_PPC64_REL16:
+  case ELF::R_PPC64_REL16_LO:
+  case ELF::R_PPC64_REL16_HI:
+  case ELF::R_PPC64_REL16_HA:
   case ELF::R_PPC64_TOC16:
   case ELF::R_PPC64_TOC16_LO:
   case ELF::R_PPC64_TOC16_HI:
@@ -307,6 +321,10 @@ static size_t getSizeForTypePPC64(uint32_t Type) {
   case ELF::R_PPC64_GOT16_LO:
   case ELF::R_PPC64_GOT16_HI:
   case ELF::R_PPC64_GOT16_HA:
+  case ELF::R_PPC64_REL16:
+  case ELF::R_PPC64_REL16_LO:
+  case ELF::R_PPC64_REL16_HI:
+  case ELF::R_PPC64_REL16_HA:
     return 2;
   case ELF::R_PPC64_ADDR32:
   case ELF::R_PPC64_REL24:
@@ -363,6 +381,10 @@ static bool isPCRelativePPC64(uint32_t Type) {
   case ELF::R_PPC64_REL64:
   case ELF::R_PPC64_REL14_BRTAKEN:
   case ELF::R_PPC64_REL14_BRNTAKEN:
+  case ELF::R_PPC64_REL16:
+  case ELF::R_PPC64_REL16_LO:
+  case ELF::R_PPC64_REL16_HI:
+  case ELF::R_PPC64_REL16_HA:
     return true;
   }
 }
@@ -672,6 +694,14 @@ static uint64_t extractValuePPC64(uint32_t Type, uint64_t Contents,
   case ELF::R_PPC64_GOT16_HI:
   case ELF::R_PPC64_GOT16_HA:
   case ELF::R_PPC64_REL32:
+  // Half16 PC-relative forms hold only ha()/lo() of the displacement, so the
+  // in-instruction field cannot be turned back into a full value. The pair is
+  // re-symbolized from the relocation's symbol and addend instead (see
+  // PPCMCPlusBuilder::replaceImmWithSymbolRef), so nothing reads this.
+  case ELF::R_PPC64_REL16:
+  case ELF::R_PPC64_REL16_LO:
+  case ELF::R_PPC64_REL16_HI:
+  case ELF::R_PPC64_REL16_HA:
     return 0;
 
   case ELF::R_PPC64_REL24: {

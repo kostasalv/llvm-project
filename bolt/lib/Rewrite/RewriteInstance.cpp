@@ -2930,6 +2930,13 @@ bool RewriteInstance::analyzeRelocation(
     case ELF::R_PPC64_REL14:
     case ELF::R_PPC64_REL24:
     case ELF::R_PPC64_REL64:
+
+    // PC-relative half16: the field holds ha()/lo() of the displacement, not
+    // the displacement, so it cannot match the verifier's full-value RHS.
+    case ELF::R_PPC64_REL16:
+    case ELF::R_PPC64_REL16_LO:
+    case ELF::R_PPC64_REL16_HI:
+    case ELF::R_PPC64_REL16_HA:
       SkipVerification = true;
       break;
 

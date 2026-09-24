@@ -1633,6 +1633,36 @@ Error BinaryFunction::disassemble() {
         (void)Result;
         assert(Result && "cannot replace immediate with relocation");
       }
+    } else if (BC.isPPC64()) {
+      // A PPC64 ELFv2 global entry point starts by recomputing the TOC pointer
+      // from r12 with a PC-relative half16 pair:
+      //
+      //   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+      //   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+      //
+      // Both immediates are relative to the address of the instruction that
+      // holds them, so they are only valid at the address the static linker
+      // chose. Copied verbatim to the function's new address they leave r2
+      // pointing at unrelated memory, and the first TOC load after the
+      // preamble faults - observed as a SIGSEGV inside an IFUNC resolver
+      // called from _dl_relocate_object. Hand the relocation to the target so
+      // the pair is re-expressed against the emitted instruction's own
+      // address.
+      //
+      // The other PPC64 relocation classes need nothing here: branches are
+      // handled above via evaluateBranch(), and the TOC/GOT-relative forms
+      // stay correct because neither r2 nor the TOC moves.
+      for (auto Itr = Relocations.lower_bound(Offset),
+                ItrE = Relocations.lower_bound(Offset + Size);
+           Itr != ItrE; ++Itr) {
+        const Relocation &Relocation = Itr->second;
+        int64_t Value = Relocation.Value;
+        // Unhandled relocation types are reported as not replaced and left
+        // alone, so this is deliberately not asserted on.
+        BC.MIB->replaceImmWithSymbolRef(Instruction, Relocation.Symbol,
+                                        Relocation.Addend, Ctx.get(), Value,
+                                        Relocation.Type);
+      }
     }
 
 add_instruction:
