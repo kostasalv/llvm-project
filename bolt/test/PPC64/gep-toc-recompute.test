@@ -19,10 +19,22 @@
 ## point, so the test calls through a volatile function pointer; a direct
 ## call would be retargeted to the local entry point and skip it.
 # REQUIRES: system-linux
+## Two flags decide whether the relocations under test exist at all.
+##
+## -fPIC: with -fno-pic (or -fPIE cancelled by -no-pie, which is how gcc reads
+## that pair) the compiler materializes .TOC. as a link-time constant via
+## R_PPC64_ADDR16_HA/_LO, which stays correct wherever BOLT puts the function
+## and so exercises nothing.
+##
+## -fuse-ld=lld: ld.bfd rewrites the r12-relative sequence into that same
+## absolute form -- the optimization ELFv2 ABI 2.3.2.1 explicitly permits a
+## linker to perform -- so the REL16 pair never reaches the executable. lld
+## leaves it alone, as in bolt/test/runtime/iplt.c.
+##
 ## -mcpu=power8 is what keeps Power10 prefixed/pcrel instructions out; do not
 ## add -mno-prefixed/-mno-pcrel, which the system gcc that lit runs with on
 ## AlmaLinux 8 (8.5.0) does not accept.
-# RUN: gcc -O2 -mcpu=power8 -fno-pic -no-pie -Wl,--emit-relocs \
+# RUN: gcc -O2 -mcpu=power8 -fPIC -fuse-ld=lld -no-pie -Wl,--emit-relocs \
 # RUN:     -fno-optimize-sibling-calls -mtraceback=no \
 # RUN:     %S/Inputs/gep-toc-recompute.c -o %t.exe
 
