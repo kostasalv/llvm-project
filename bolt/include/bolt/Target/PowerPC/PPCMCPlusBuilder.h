@@ -35,6 +35,14 @@ public:
   /// so LongJmpPass skips the short-jmp relaxation step.
   int getShortJmpEncodingSize() const override;
 
+  /// Re-express a PC-relative half16 immediate (R_PPC64_REL16{,_LO,_HI,_HA})
+  /// as a symbolic reference relative to the instruction's own emitted
+  /// address. Returns false for every other relocation type, which needs no
+  /// adjustment.
+  bool replaceImmWithSymbolRef(MCInst &Inst, const MCSymbol *Symbol,
+                               int64_t Addend, MCContext *Ctx, int64_t &Value,
+                               uint32_t RelType) const override;
+
   void createLongJmp(InstructionListType &Seq, const MCSymbol *Target,
                      MCContext *Ctx, bool IsTailCall = false) override;
 

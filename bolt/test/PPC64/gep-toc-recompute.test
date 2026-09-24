@@ -1,0 +1,40 @@
+## Test that BOLT re-relocates the PPC64 ELFv2 global entry point (GEP)
+## TOC-recompute preamble instead of copying it verbatim.
+##
+## Every global function that touches the TOC starts with
+##
+##   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+##   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+##
+## Both immediates are relative to the address of the instruction holding
+## them, so they are only valid at the address the static linker chose. BOLT
+## used to drop these relocations (R_PPC64_REL16* were missing from
+## isSupportedPPC64) and emit the immediates unchanged at the function's new
+## address, so r2 ended up off by the distance the function moved and the
+## first TOC access after the preamble read unmapped memory. The original
+## symptom was a SIGSEGV inside an IFUNC resolver called from
+## _dl_relocate_object (bolt/test/runtime/iplt.c).
+##
+## The preamble only runs when a function is entered at its global entry
+## point, so the test calls through a volatile function pointer; a direct
+## call would be retargeted to the local entry point and skip it.
+# REQUIRES: system-linux
+# RUN: gcc -O2 -mcpu=power8 -mno-prefixed -mno-pcrel \
+# RUN:     -fno-pic -no-pie -Wl,--emit-relocs \
+# RUN:     -fno-optimize-sibling-calls -mtraceback=no \
+# RUN:     %S/Inputs/gep-toc-recompute.c -o %t.exe
+
+## Guard against the input silently losing the relocations under test, which
+## would make the run below pass for the wrong reason.
+# RUN: llvm-readelf -rW %t.exe | FileCheck %s --check-prefix=INPUT
+# INPUT-DAG: R_PPC64_REL16_HA
+# INPUT-DAG: R_PPC64_REL16_LO
+
+# RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s --check-prefix=BOLT
+# BOLT: BOLT-INFO: Target architecture: powerpc64le
+# BOLT: BOLT-INFO: enabling relocation mode
+
+## The rewritten binary must still compute the right TOC base: it prints the
+## value it loaded through r2 and exits non-zero if it is wrong.
+# RUN: %t.bolt | FileCheck %s --check-prefix=EXEC
+# EXEC: value = 33
