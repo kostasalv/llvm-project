@@ -56,9 +56,17 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
   if (opts::Verbosity >= 1)
     BC.outs() << "BOLT-INFO: patching entries in original code\n";
 
-  // Calculate the size of the patch.
+  // Calculate the size of the fallback absolute patch. PPC64 can use a
+  // direct branch when the redirect target is within REL24 range; the actual
+  // patch size is selected per entry below.
+  size_t LongPatchSize = 0;
+  if (BC.isPPC64()) {
+    InstructionListType Seq;
+    BC.MIB->createLongTailCall(Seq, BC.Ctx->createTempSymbol(), BC.Ctx.get());
+    LongPatchSize = BC.computeCodeSize(Seq.begin(), Seq.end());
+  }
   static size_t PatchSize = 0;
-  if (!PatchSize) {
+  if (!PatchSize && !BC.isPPC64()) {
     InstructionListType Seq;
     BC.MIB->createLongTailCall(Seq, BC.Ctx->createTempSymbol(), BC.Ctx.get());
     PatchSize = BC.computeCodeSize(Seq.begin(), Seq.end());
@@ -132,9 +140,23 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       // Make the check explicit instead of relying on forEachEntryPoint to
       // surface it: once the offset-0 (global-entry) patch's extent is known,
       // directly test whether the local entry offset falls inside it.
+      uint64_t EntryPatchSize = PatchSize;
+      bool DirectBranch = false;
+      if (BC.isPPC64()) {
+        const uint64_t PC = Function.getAddress() + Offset;
+        const uint64_t Target = Function.getOutputAddress();
+        if (Target && Relocation::canEncodeValue(ELF::R_PPC64_REL24,
+                                                 Target, PC)) {
+          EntryPatchSize = 4;
+          DirectBranch = true;
+        } else {
+          EntryPatchSize = LongPatchSize;
+        }
+      }
+
       if (BC.isPPC64() && Offset == 0) {
         const uint8_t LEPOffset = Function.getPPC64LocalEntryOffset();
-        if (LEPOffset && LEPOffset < Offset + PatchSize) {
+        if (LEPOffset && LEPOffset < Offset + EntryPatchSize) {
           if (opts::Verbosity >= 1)
             BC.outs() << "BOLT-INFO: unable to patch entry point in "
                       << Function << " at offset 0x"
@@ -152,7 +174,7 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
         return false;
       }
 
-      NextValidByte = Offset + PatchSize;
+      NextValidByte = Offset + EntryPatchSize;
       if (NextValidByte > Function.getMaxSize()) {
         if (opts::Verbosity >= 1)
           BC.outs() << "BOLT-INFO: function " << Function
@@ -161,14 +183,14 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       }
 
       const uint64_t PatchAddress = Function.getAddress() + Offset;
-      Patch P{Symbol, PatchAddress};
+      Patch P{Symbol, PatchAddress, EntryPatchSize, DirectBranch};
 
       if (BC.isX86()) {
         uint64_t OverwriteLength =
-            Function.getInstructionSequenceLength(Offset, PatchSize);
-        P.PaddingAfter = OverwriteLength - PatchSize;
+            Function.getInstructionSequenceLength(Offset, EntryPatchSize);
+        P.PaddingAfter = OverwriteLength - EntryPatchSize;
         assert(PendingPatches.empty() ||
-               (PendingPatches.back().Address + PatchSize +
+               (PendingPatches.back().Address + PendingPatches.back().Size +
                     PendingPatches.back().PaddingAfter <=
                 PatchAddress) &&
                    "Entry point cannot overlap with instruction stream of "
@@ -191,7 +213,12 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
     for (Patch &Patch : PendingPatches) {
       // Add instruction patch to the binary.
       InstructionListType Instructions;
-      BC.MIB->createLongTailCall(Instructions, Patch.Symbol, BC.Ctx.get());
+      if (Patch.DirectBranch) {
+        BC.MIB->createUncondBranch(Instructions.emplace_back(), Patch.Symbol,
+                                   BC.Ctx.get());
+      } else {
+        BC.MIB->createLongTailCall(Instructions, Patch.Symbol, BC.Ctx.get());
+      }
 
       if (BC.isX86()) {
         assert(Patch.PaddingAfter % FillerSize == 0 &&
@@ -213,7 +240,7 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       uint64_t HotSize, ColdSize;
       std::tie(HotSize, ColdSize) = BC.calculateEmittedSize(*PatchFunction);
       assert(!ColdSize && "unexpected cold code");
-      assert(HotSize <= PatchSize + Patch.PaddingAfter &&
+      assert(HotSize <= Patch.Size + Patch.PaddingAfter &&
              "max patch size exceeded");
     }
   }
