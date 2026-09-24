@@ -57,8 +57,26 @@ bool PPCMCPlusBuilder::shouldRecordCodeRelocation(unsigned Type) const {
   // edges that expect a NOP at call+4. But PLT stubs have real code there
   // (ld r2,24(r1) or the next instruction), causing an assertion failure.
   // Therefore, do NOT record R_PPC64_REL24 as a code relocation on PPC64.
+  //
+  // The PC-relative half16 family is the opposite case and must be recorded.
+  // It carries the ELFv2 global entry point TOC-recompute preamble
+  //
+  //   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+  //   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+  //
+  // whose immediates are relative to the instruction that holds them and are
+  // therefore only valid at the address the static linker chose. Nothing else
+  // re-derives them - they are not branches, so evaluateBranch() never sees
+  // them - so dropping them here leaves the raw immediates to be copied to the
+  // function's new address, where they compute a garbage TOC base. They are
+  // re-expressed from the recorded symbol and addend in
+  // replaceImmWithSymbolRef().
   switch (Type) {
   case ELF::R_PPC64_REL14:
+  case ELF::R_PPC64_REL16:
+  case ELF::R_PPC64_REL16_LO:
+  case ELF::R_PPC64_REL16_HI:
+  case ELF::R_PPC64_REL16_HA:
     return true;
   default:
     return false;
