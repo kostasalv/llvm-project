@@ -2005,8 +2005,18 @@ bool BinaryFunction::scanExternalRefs() {
       if (BC.isPPC64()) {
         Rel->setOptional();
 
-        if (BinaryFunction *TargetBF = BC.getFunctionForSymbol(Rel->Symbol))
-          TargetBF->setNeedsPatch(true);
+        // A redirect stub is needed only when the original call/branch target
+        // is already outside the instruction's encoding range. Calls that are
+        // in range in the input remain valid when their optional relocation is
+        // preserved; marking every target for PatchEntries forces 28-byte
+        // PPC64 patches onto small ELFv2 PLT stubs and local-entry functions.
+        if (BinaryFunction *TargetBF = BC.getFunctionForSymbol(Rel->Symbol)) {
+          const uint64_t PC = getAddress() + Offset;
+          if (Relocation::isPCRelative(Rel->Type) &&
+              !Relocation::canEncodeValue(Rel->Type, TargetBF->getAddress(),
+                                          PC))
+            TargetBF->setNeedsPatch(true);
+        }
       }
 
       Rel->Offset += getAddress() - getOriginSection()->getAddress() + Offset;
