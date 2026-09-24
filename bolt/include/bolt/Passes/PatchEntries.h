@@ -27,7 +27,15 @@ class PatchEntries : public BinaryFunctionPass {
     const MCSymbol *Symbol;
     uint64_t Address;
     uint64_t Size;
+    /// Emit a single unconditional branch instead of an absolute long tail
+    /// call. Only used on PPC64, and only when the branch displacement is
+    /// known to be encodable without any knowledge of the output layout.
     bool DirectBranch = false;
+    /// PPC64 ELFv2: index into the function's pending patch list of the patch
+    /// this one branches to. -1 means the redirect targets \p Symbol directly.
+    /// Used to send the global entry point to the patch installed at the local
+    /// entry point, whose address is a fixed, small offset away.
+    int BranchToPatch = -1;
     uint32_t PaddingAfter = 0;
   };
 

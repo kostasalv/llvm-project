@@ -38,17 +38,50 @@ The initially pushed `a00493c6c2fb` attempted to gate `setNeedsPatch(true)` usin
 so it would effectively disable redirect requests for large rewrites. It was reverted
 semantically by `a4d61b3c10aa`.
 
-The final fix keeps the existing optional-relocation and redirect-request pairing, and
-moves the range decision to `PatchEntries`, where the output address is available. Each
-PPC64 entry now selects its actual patch size:
+`48769d987569` then moved the range decision to `PatchEntries`, selecting a four-byte
+direct `b` when `Function.getOutputAddress()` is within REL24 range. That was also
+incorrect, and for the same underlying reason: **the output address is not available in
+`PatchEntries`.** The pass is registered at `BinaryPassManager.cpp:534`, inside
+`runOptimizationPasses()` (called from `RewriteInstance.cpp:869`), whereas
+`OutputAddress` is only ever written by `BinaryFunction::updateOutputValues()`
+(`BinaryFunction.cpp:4700`/`:4707`), reached from `emitAndLink()` at
+`RewriteInstance.cpp:873`. `getOutputAddress()` therefore returns 0 for every function
+while this pass runs, the guard never fires, and the commit was a no-op. It failed safe,
+so it left the tree no worse — just not better.
 
-- four-byte direct `b` when `Function.getOutputAddress()` is within REL24 range;
-- the existing 28-byte absolute long-tail-call otherwise.
+The actual remaining failure was the local-entry-point overlap, confirmed on cfarm135
+with `-v=1`:
 
-The local-entry overlap and patch-size checks use that per-entry size, and patch records
-store the selected size/direct-branch mode. This preserves the large-binary redirect
-mechanism while allowing nearby 20-byte ELFv2 stubs and offset-8 local entries to be
-patched safely.
+```text
+BOLT-INFO: unable to patch entry point in main at offset 0x8 (ELFv2 local entry point overlaps global-entry patch)
+BOLT-INFO: unable to patch entry point in _init/1(*2) at offset 0x8 (...)
+```
+
+Note the scope: essentially every global ELFv2 function has a local entry point at
+offset 8, so a 28-byte patch at offset 0 always collides with it. Refusing to patch on
+collision abandons almost every function in the binary, not just PLT stubs.
+
+The fix splits the redirect across both ABI entry points, using only displacements that
+are provable without any layout information:
+
+```text
+offset 0     b <local entry patch>                 <- global entry
+offset 4     left untouched
+offset LEP   lis8 r12, ...; mtctr r12; bctr        <- local entry
+```
+
+Both entries land on the *global* entry point of the new function, which rebuilds r2
+from r12 itself, so neither depends on the TOC base the caller happened to hold;
+`createLongTailCall()` materializes the target into r12, which is what the ELFv2 ABI
+requires of a caller entering a global entry point. The forwarding branch's displacement
+is the local entry offset (at most 64 bytes), so it needs no output address. Leaving
+offset 4 untouched is ABI-legal: ELFv2 §2.3.2.1 states that "addresses between the
+global and local entry points must not be branch targets, either for function entry or
+referenced by program logic of the function".
+
+Total budget is `LEP + 28` = 36 bytes for the usual `LEP == 8`. `_init` has exactly 64
+bytes of room (BOLT reports `setting size of function _init/1(*2) to 64`) and `main` has
+152, so both fit. Where it does not fit, the function is still ignored, as before.
 
 Commits:
 

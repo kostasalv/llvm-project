@@ -56,14 +56,21 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
   if (opts::Verbosity >= 1)
     BC.outs() << "BOLT-INFO: patching entries in original code\n";
 
-  // Calculate the size of the fallback absolute patch. PPC64 can use a
-  // direct branch when the redirect target is within REL24 range; the actual
-  // patch size is selected per entry below.
+  // PPC64 ELFv2 needs two patch shapes, so its sizes are computed separately
+  // (and not cached in a static, which would leak across targets): a full
+  // absolute long tail call, and a single unconditional branch used to forward
+  // the global entry point to the local entry point.
   size_t LongPatchSize = 0;
+  size_t BranchSize = 0;
   if (BC.isPPC64()) {
     InstructionListType Seq;
     BC.MIB->createLongTailCall(Seq, BC.Ctx->createTempSymbol(), BC.Ctx.get());
     LongPatchSize = BC.computeCodeSize(Seq.begin(), Seq.end());
+
+    InstructionListType BranchSeq(1);
+    BC.MIB->createUncondBranch(BranchSeq.front(), BC.Ctx->createTempSymbol(),
+                               BC.Ctx.get());
+    BranchSize = BC.computeCodeSize(BranchSeq.begin(), BranchSeq.end());
   }
   static size_t PatchSize = 0;
   if (!PatchSize && !BC.isPPC64()) {
@@ -137,35 +144,41 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       // relocation) branched straight to Func+8, landing on the `rldicr` at
       // stub offset 8.
       //
-      // Make the check explicit instead of relying on forEachEntryPoint to
-      // surface it: once the offset-0 (global-entry) patch's extent is known,
-      // directly test whether the local entry offset falls inside it.
-      uint64_t EntryPatchSize = PatchSize;
-      bool DirectBranch = false;
-      if (BC.isPPC64()) {
-        const uint64_t PC = Function.getAddress() + Offset;
-        const uint64_t Target = Function.getOutputAddress();
-        if (Target && Relocation::canEncodeValue(ELF::R_PPC64_REL24,
-                                                 Target, PC)) {
-          EntryPatchSize = 4;
-          DirectBranch = true;
-        } else {
-          EntryPatchSize = LongPatchSize;
-        }
-      }
-
-      if (BC.isPPC64() && Offset == 0) {
-        const uint8_t LEPOffset = Function.getPPC64LocalEntryOffset();
-        if (LEPOffset && LEPOffset < Offset + EntryPatchSize) {
-          if (opts::Verbosity >= 1)
-            BC.outs() << "BOLT-INFO: unable to patch entry point in "
-                      << Function << " at offset 0x"
-                      << Twine::utohexstr(LEPOffset)
-                      << " (ELFv2 local entry point overlaps global-entry "
-                         "patch)\n";
-          return false;
-        }
-      }
+      // So the local entry point has to be handled explicitly here rather than
+      // left to forEachEntryPoint(). Note that essentially every global ELFv2
+      // function has a local entry point, so simply refusing to patch these
+      // would abandon almost every function in the binary.
+      //
+      // Split the redirect in two instead of giving up:
+      //
+      //   offset 0    b <local entry patch>                  <- global entry
+      //   offset 4    (left untouched; never a branch target, see below)
+      //   offset LEP  lis8 r12, ...; mtctr r12; bctr         <- local entry
+      //
+      // Both ABI entries end up at the *global* entry point of the new
+      // function, which rebuilds r2 from r12 itself, so neither entry depends
+      // on the TOC base the caller happened to hold. createLongTailCall()
+      // materializes the target into r12, which is exactly what the ELFv2 ABI
+      // requires of a caller entering a global entry point.
+      //
+      // The forwarding branch's displacement is the local entry offset - at
+      // most 64 bytes - so it is encodable without knowing anything about the
+      // output layout. That matters: this pass runs inside
+      // runOptimizationPasses(), long before emitAndLink() assigns output
+      // addresses, so Function.getOutputAddress() is still 0 here and any
+      // range decision based on it would be meaningless.
+      //
+      // Leaving offset 4 alone is safe. Per the ELFv2 ABI (Section 2.3.2.1,
+      // Function Prologue): "Addresses between the global and local entry
+      // points must not be branch targets, either for function entry or
+      // referenced by program logic of the function." Nothing can enter there,
+      // and those bytes are dead once offset 0 is overwritten.
+      uint64_t EntryPatchSize = BC.isPPC64() ? LongPatchSize : PatchSize;
+      const uint8_t LEPOffset =
+          BC.isPPC64() ? Function.getPPC64LocalEntryOffset() : 0;
+      const bool SplitEntry = LEPOffset && Offset == 0;
+      if (SplitEntry)
+        EntryPatchSize = LEPOffset + LongPatchSize;
 
       if (Offset < NextValidByte) {
         if (opts::Verbosity >= 1)
@@ -183,7 +196,20 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       }
 
       const uint64_t PatchAddress = Function.getAddress() + Offset;
-      Patch P{Symbol, PatchAddress, EntryPatchSize, DirectBranch};
+
+      if (SplitEntry) {
+        // Emit the local entry patch first: the global entry point's forwarding
+        // branch resolves its target from the patch function created for it.
+        PendingPatches.emplace_back(
+            Patch{Symbol, PatchAddress + LEPOffset, LongPatchSize});
+        Patch Forward{Symbol, PatchAddress, BranchSize};
+        Forward.DirectBranch = true;
+        Forward.BranchToPatch = static_cast<int>(PendingPatches.size()) - 1;
+        PendingPatches.emplace_back(Forward);
+        return true;
+      }
+
+      Patch P{Symbol, PatchAddress, EntryPatchSize};
 
       if (BC.isX86()) {
         uint64_t OverwriteLength =
@@ -210,14 +236,30 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       continue;
     }
 
-    for (Patch &Patch : PendingPatches) {
+    // Patch functions in creation order, so that a patch forwarding to another
+    // one (PPC64 global -> local entry point) can name its target's symbol.
+    std::vector<BinaryFunction *> PatchFunctions(PendingPatches.size(), nullptr);
+
+    for (unsigned Idx = 0; Idx < PendingPatches.size(); ++Idx) {
+      Patch &Patch = PendingPatches[Idx];
+
+      const MCSymbol *TargetSymbol = Patch.Symbol;
+      std::string PatchName =
+          NameResolver::append(Patch.Symbol->getName(), ".org.0");
+      if (Patch.BranchToPatch >= 0) {
+        assert(PatchFunctions[Patch.BranchToPatch] &&
+               "forwarding patch must be created after its target");
+        TargetSymbol = PatchFunctions[Patch.BranchToPatch]->getSymbol();
+        PatchName = NameResolver::append(Patch.Symbol->getName(), ".org.gep");
+      }
+
       // Add instruction patch to the binary.
       InstructionListType Instructions;
       if (Patch.DirectBranch) {
-        BC.MIB->createUncondBranch(Instructions.emplace_back(), Patch.Symbol,
+        BC.MIB->createUncondBranch(Instructions.emplace_back(), TargetSymbol,
                                    BC.Ctx.get());
       } else {
-        BC.MIB->createLongTailCall(Instructions, Patch.Symbol, BC.Ctx.get());
+        BC.MIB->createLongTailCall(Instructions, TargetSymbol, BC.Ctx.get());
       }
 
       if (BC.isX86()) {
@@ -229,9 +271,9 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
             Instructions.size() + Patch.PaddingAfter / FillerSize, Inst);
       }
 
-      BinaryFunction *PatchFunction = BC.createInstructionPatch(
-          Patch.Address, Instructions,
-          NameResolver::append(Patch.Symbol->getName(), ".org.0"));
+      BinaryFunction *PatchFunction =
+          BC.createInstructionPatch(Patch.Address, Instructions, PatchName);
+      PatchFunctions[Idx] = PatchFunction;
       if (BC.usesBTI())
         BC.MIB->applyBTIFixupToSymbol(BC, Patch.Symbol,
                                       *(Instructions.end() - 1));
