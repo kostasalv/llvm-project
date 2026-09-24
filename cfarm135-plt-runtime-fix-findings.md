@@ -33,13 +33,32 @@ Latest commit:
 a00493c6c2fb [BOLT][PowerPC] Patch only out-of-range relocation targets
 ```
 
-The fix preserves optional PPC64 relocations and calls `setNeedsPatch(true)` only
-when the original target address cannot be represented by the relocation at the
-original call/branch PC. In-range calls no longer force PatchEntries to install the
-28-byte absolute PPC64 patch sequence.
+The initially pushed `a00493c6c2fb` attempted to gate `setNeedsPatch(true)` using
+`TargetBF->getAddress()`. That was incorrect: it tested the input address before layout,
+so it would effectively disable redirect requests for large rewrites. It was reverted
+semantically by `a4d61b3c10aa`.
 
-This specifically targets the confirmed cause. PatchEntries and its local-entry
-safety checks were not weakened.
+The final fix keeps the existing optional-relocation and redirect-request pairing, and
+moves the range decision to `PatchEntries`, where the output address is available. Each
+PPC64 entry now selects its actual patch size:
+
+- four-byte direct `b` when `Function.getOutputAddress()` is within REL24 range;
+- the existing 28-byte absolute long-tail-call otherwise.
+
+The local-entry overlap and patch-size checks use that per-entry size, and patch records
+store the selected size/direct-branch mode. This preserves the large-binary redirect
+mechanism while allowing nearby 20-byte ELFv2 stubs and offset-8 local entries to be
+patched safely.
+
+Commits:
+
+```text
+48769d987569 [BOLT][PowerPC] Use direct branches for nearby entry patches
+a4d61b3c10aa [BOLT][PowerPC] Restore relocation redirect requests
+```
+
+This specifically targets the confirmed cause. PatchEntries safety checks remain active;
+only the patch encoding/size is selected after layout.
 
 ## Earlier durable commits
 
