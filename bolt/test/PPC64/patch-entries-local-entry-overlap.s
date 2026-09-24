@@ -23,9 +23,16 @@
 ## to the LEP (as ELFv2 callers that already have r2 are meant to use)
 ## then lands mid-stub on an instruction that assumes earlier stub
 ## instructions already ran -- producing a garbage absolute address and
-## a wild branch at runtime. BOLT must detect this overlap up front and
-## mark the function Ignored (leave the original bytes untouched, do not
-## optimize it) rather than silently emit the corrupting redirect.
+## a wild branch at runtime.
+##
+## PatchEntries resolves this by splitting the redirect across both entry
+## points: a forwarding branch at the GEP and the long-tail-call at the
+## LEP (see patch-entries-split-local-entry.s). That needs LEP + 28 bytes
+## of room. This test covers the case where the function is *too small*
+## for the split, which must still leave the original bytes untouched and
+## mark the function Ignored rather than silently emit the corrupting
+## redirect. `with_toc` here is 16 bytes, well under the 8 + 28 = 36
+## needed.
 ##
 ## This is only reachable in non-relocation mode, which BOLT does not
 ## select by default when it can use relocations (as in the other PPC64
@@ -42,12 +49,10 @@
 
 # CHECK: BOLT-INFO: Target architecture: powerpc64le
 
-## `with_toc`'s local entry point (offset 8) overlaps the 28-byte
-## global-entry redirect patch (offset 0..27), so it must be reported as
-## unpatchable and the function must be marked ignored -- not silently
-## corrupted.
-# CHECK: BOLT-INFO: unable to patch entry point in with_toc at offset 0x8
-# CHECK-SAME: local entry point overlaps global-entry patch
+## `with_toc` is 16 bytes, so the split redirect (8 + 28 = 36 bytes) does
+## not fit. It must be reported as unpatchable and the function must be
+## marked ignored -- not silently corrupted.
+# CHECK: BOLT-INFO: function with_toc{{.*}} too small to patch its entry point
 # CHECK-NEXT: BOLT-WARNING: failed to patch entries in with_toc
 
 ## Since with_toc was left Ignored, its original bytes (and address) must

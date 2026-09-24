@@ -103,6 +103,9 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
     std::vector<Patch> PendingPatches;
 
     uint64_t NextValidByte = 0; // offset of the byte past the last patch
+    // PPC64 ELFv2: offset of the local entry point already redirected by the
+    // split patch installed for offset 0, or 0 if there is none.
+    uint64_t SplitLEPOffset = 0;
     bool Success = Function.forEachEntryPoint([&](uint64_t Offset,
                                                   const MCSymbol *Symbol) {
       // PPC64 ELFv2: the local entry point (offset == getPPC64LocalEntryOffset,
@@ -180,6 +183,15 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       if (SplitEntry)
         EntryPatchSize = LEPOffset + LongPatchSize;
 
+      // The split redirect installed for offset 0 already covers the local
+      // entry point. The comment above notes that the local entry offset is
+      // normally not registered as a BOLT entry point, but it can be (e.g.
+      // _init, reported as `_init/1(*2)`), in which case forEachEntryPoint()
+      // calls back for it as well. The redirect is already in place, so accept
+      // it rather than reporting it as an overlap.
+      if (Offset && Offset == SplitLEPOffset)
+        return true;
+
       if (Offset < NextValidByte) {
         if (opts::Verbosity >= 1)
           BC.outs() << "BOLT-INFO: unable to patch entry point in " << Function
@@ -198,6 +210,7 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       const uint64_t PatchAddress = Function.getAddress() + Offset;
 
       if (SplitEntry) {
+        SplitLEPOffset = LEPOffset;
         // Emit the local entry patch first: the global entry point's forwarding
         // branch resolves its target from the patch function created for it.
         PendingPatches.emplace_back(
@@ -258,6 +271,13 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
       if (Patch.DirectBranch) {
         BC.MIB->createUncondBranch(Instructions.emplace_back(), TargetSymbol,
                                    BC.Ctx.get());
+        // Mark the branch as a tail call. A patch function has no CFG
+        // successors, and fixBranches() erases a block's unconditional branch
+        // before re-creating it only for blocks that have one - so an
+        // unannotated branch here is silently dropped and the patch emits zero
+        // bytes, leaving the original entry point intact. This is the same
+        // reason X86 and AArch64 build their entry patches as tail calls.
+        BC.MIB->convertJmpToTailCall(Instructions.back());
       } else {
         BC.MIB->createLongTailCall(Instructions, TargetSymbol, BC.Ctx.get());
       }
