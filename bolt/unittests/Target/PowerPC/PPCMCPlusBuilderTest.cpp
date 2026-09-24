@@ -385,6 +385,106 @@ TEST_F(PPCMCPlusBuilderFixture, AnalyzeBranch_CallEndingBlockIsFallthrough) {
   EXPECT_EQ(UncondBr, nullptr);
 }
 
+// --- 64-bit opcode-twin tests ---
+//
+// BLR8, BCTR8 and BCTRL8 are declared under
+// `let Interpretation64Bit = 1, isCodeGenOnly = 1` in PPCInstr64Bit.td: they
+// encode identically to BLR/BCTR/BCTRL, so the disassembler never produces
+// them and every predicate below saw them only when this port created them
+// itself -- createLongJmp() ends its stub with BCTR8 (tail call) or BCTRL8
+// (call), and buildCallStubTOCThunk() ends its with BLR8. Every predicate in
+// PPCMCPlusBuilder listed only the non-8 spellings, so the port could not
+// classify its own output: a stub's terminator was neither a branch nor a
+// return nor convertible to a tail call. These tests pin both spellings to
+// the same answer.
+
+TEST_F(PPCMCPlusBuilderFixture, IsReturn_BLR_And_BLR8) {
+  for (unsigned Opc : {PPC::BLR, PPC::BLR8}) {
+    MCInst I;
+    I.setOpcode(Opc);
+    EXPECT_TRUE(BC->MIB->isReturn(I))
+        << "opcode " << Opc << " should be classified as a return";
+  }
+}
+
+TEST_F(PPCMCPlusBuilderFixture, IsBranch_CTR_And_LR_Twins) {
+  for (unsigned Opc : {PPC::BCTR, PPC::BCTR8, PPC::BCTRL, PPC::BCTRL8,
+                       PPC::BLR, PPC::BLR8}) {
+    MCInst I;
+    I.setOpcode(Opc);
+    EXPECT_TRUE(BC->MIB->isBranch(I))
+        << "opcode " << Opc << " should be classified as a branch";
+  }
+}
+
+TEST_F(PPCMCPlusBuilderFixture, IsIndirectBranch_CTR_Twins) {
+  for (unsigned Opc : {PPC::BCTR, PPC::BCTR8, PPC::BCTRL, PPC::BCTRL8}) {
+    MCInst I;
+    I.setOpcode(Opc);
+    EXPECT_TRUE(BC->MIB->isIndirectBranch(I))
+        << "opcode " << Opc << " should be classified as an indirect branch";
+  }
+}
+
+TEST_F(PPCMCPlusBuilderFixture, IsUnconditionalBranch_BCTR8) {
+  // isUnconditionalBranch() short-circuits on isTailCall(), so check the
+  // unannotated instruction.
+  MCInst I;
+  I.setOpcode(PPC::BCTR8);
+  EXPECT_TRUE(BC->MIB->isUnconditionalBranch(I));
+}
+
+TEST_F(PPCMCPlusBuilderFixture, ConvertJmpToTailCall_BCTR8) {
+  for (unsigned Opc : {PPC::BCTR, PPC::BCTR8}) {
+    MCInst I;
+    I.setOpcode(Opc);
+    EXPECT_TRUE(BC->MIB->convertJmpToTailCall(I))
+        << "opcode " << Opc << " should be convertible to a tail call";
+    EXPECT_TRUE(BC->MIB->isTailCall(I))
+        << "opcode " << Opc << " should carry the tail-call annotation after "
+                               "convertJmpToTailCall()";
+  }
+}
+
+TEST_F(PPCMCPlusBuilderFixture, ConvertJmpToTailCall_RejectsNonBranch) {
+  // A conditional branch is not an unconditional jump and must be left alone;
+  // guards against the switch above being widened carelessly.
+  MCInst I = makeCondBranch("cond_target");
+  EXPECT_FALSE(BC->MIB->convertJmpToTailCall(I));
+  EXPECT_FALSE(BC->MIB->isTailCall(I));
+}
+
+// --- createLongJmp round trip ---
+//
+// The property that actually matters: whatever createLongJmp() emits, this
+// same builder has to be able to classify. Asserting on the terminator via
+// the predicates rather than on a literal opcode keeps the test honest if the
+// stub is ever re-spelled.
+
+TEST_F(PPCMCPlusBuilderFixture, CreateLongJmp_TailCall_TerminatorIsClassified) {
+  InstructionListType Seq;
+  MCSymbol *Target = BC->Ctx->getOrCreateSymbol("far_target");
+  BC->MIB->createLongJmp(Seq, Target, BC->Ctx.get(), /*IsTailCall=*/true);
+
+  ASSERT_FALSE(Seq.empty());
+  MCInst &Last = Seq.back();
+  EXPECT_TRUE(BC->MIB->isBranch(Last));
+  EXPECT_TRUE(BC->MIB->isIndirectBranch(Last));
+  EXPECT_FALSE(BC->MIB->isCall(Last)) << "a tail-call stub must not link";
+  EXPECT_TRUE(BC->MIB->convertJmpToTailCall(Last));
+}
+
+TEST_F(PPCMCPlusBuilderFixture, CreateLongJmp_Call_TerminatorIsClassified) {
+  InstructionListType Seq;
+  MCSymbol *Target = BC->Ctx->getOrCreateSymbol("far_callee");
+  BC->MIB->createLongJmp(Seq, Target, BC->Ctx.get(), /*IsTailCall=*/false);
+
+  ASSERT_FALSE(Seq.empty());
+  MCInst &Last = Seq.back();
+  EXPECT_TRUE(BC->MIB->isCall(Last)) << "a call stub must link";
+  EXPECT_TRUE(BC->MIB->isIndirectBranch(Last));
+}
+
 #endif // POWERPC_AVAILABLE
 
 } // end anonymous namespace

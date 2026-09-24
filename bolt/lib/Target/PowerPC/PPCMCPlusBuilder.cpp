@@ -532,6 +532,9 @@ bool PPCMCPlusBuilder::isIndirectBranch(const MCInst &I) const {
   case PPC::BCTRL:
   case PPC::BCLR:
   case PPC::BCLRL:
+  // isCodeGenOnly twins this port creates in createLongJmp(); see isBranch().
+  case PPC::BCTR8:
+  case PPC::BCTRL8:
     return true;
   default:
     return false;
@@ -601,6 +604,11 @@ bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
   case PPC::B:
   case PPC::BA:
   case PPC::BCTR:
+  // createLongJmp(IsTailCall=true) terminates the stub with BCTR8, the
+  // isCodeGenOnly 64-bit twin of BCTR; without it here that stub cannot be
+  // marked a tail call and hits exactly the validateCFG() failure described
+  // above.
+  case PPC::BCTR8:
     setTailCall(Inst);
     return true;
   default:
@@ -732,6 +740,16 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   case PPC::BCTRL: // branch to CTR with link
   case PPC::BLR:   // branch to LR
   case PPC::BLRL:  // branch to LR with link
+  // The 64-bit twins are isCodeGenOnly (PPCInstr64Bit.td), so the
+  // disassembler never produces them and they only ever reach these
+  // predicates when this port creates them itself -- createLongJmp() emits
+  // BCTR8/BCTRL8 and buildCallStubTOCThunk() emits BLR8. Listing them costs
+  // nothing for decoded input and keeps a port-built stub from being
+  // classified differently from the identical sequence read back from a
+  // binary.
+  case PPC::BCTR8:
+  case PPC::BCTRL8:
+  case PPC::BLR8:
     return true;
   default:
     return false;
@@ -739,7 +757,12 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
 }
 
 bool PPCMCPlusBuilder::isReturn(const MCInst &Inst) const {
-  return Inst.getOpcode() == PPC::BLR;
+  // BLR8 is the isCodeGenOnly 64-bit twin of BLR with the same encoding, so
+  // it never comes out of the disassembler -- but buildCallStubTOCThunk()
+  // terminates its stubs with it, and a stub whose last instruction is not
+  // recognized as a return is invisible to isTerminator() and to the CFG
+  // builder.
+  return Inst.getOpcode() == PPC::BLR || Inst.getOpcode() == PPC::BLR8;
 }
 
 bool PPCMCPlusBuilder::isConditionalReturn(const MCInst &Inst) const {
@@ -934,6 +957,8 @@ bool PPCMCPlusBuilder::isUnconditionalBranch(const MCInst &I) const {
   case PPC::BA:   // absolute branch
   case PPC::BCTR: // branch to CTR (no link) – often tail call
   case PPC::BCLR: // branch to LR  (no link)
+  // isCodeGenOnly twin this port creates in createLongJmp(); see isBranch().
+  case PPC::BCTR8:
     return true;
   default:
     return false;
