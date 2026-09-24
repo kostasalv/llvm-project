@@ -1365,6 +1365,12 @@ void RewriteInstance::discoverFileObjects() {
                             SymName.contains(".plt_branch.") ||
                             SymName.contains(".plt_call.")))
         BF->setIgnored();
+      // Some PPC64 linkers place the executable PLT call stubs in .text
+      // instead of .plt/.iplt. Treat their named __plt_* symbols like the
+      // synthetic PLT functions created by disassemblePLT(), so PatchEntries
+      // does not overwrite their ABI-specific descriptors or branches.
+      if (BC->isPPC64() && SymName.starts_with("__plt_"))
+        BF->setPseudo(true);
       // PPC64 ELFv2: non-simple functions (those BOLT cannot fully disassemble
       // or rewrite, e.g. functions with unsupported instructions or jump tables
       // BOLT doesn't control) contain raw `b`/`bl` instructions with
