@@ -19,8 +19,10 @@
 ## point, so the test calls through a volatile function pointer; a direct
 ## call would be retargeted to the local entry point and skip it.
 # REQUIRES: system-linux
-# RUN: gcc -O2 -mcpu=power8 -mno-prefixed -mno-pcrel \
-# RUN:     -fno-pic -no-pie -Wl,--emit-relocs \
+## -mcpu=power8 is what keeps Power10 prefixed/pcrel instructions out; do not
+## add -mno-prefixed/-mno-pcrel, which the system gcc that lit runs with on
+## AlmaLinux 8 (8.5.0) does not accept.
+# RUN: gcc -O2 -mcpu=power8 -fno-pic -no-pie -Wl,--emit-relocs \
 # RUN:     -fno-optimize-sibling-calls -mtraceback=no \
 # RUN:     %S/Inputs/gep-toc-recompute.c -o %t.exe
 

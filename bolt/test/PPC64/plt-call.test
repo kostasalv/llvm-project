@@ -6,8 +6,11 @@
 ## Hand-written assembly cannot easily replicate the gcc PLT stub pattern
 ## that BOLT currently supports.
 # REQUIRES: system-linux
-# RUN: gcc -O2 -mcpu=power8 -mno-prefixed -mno-pcrel \
-# RUN:     -fno-pic -no-pie -Wl,--emit-relocs \
+## -mcpu=power8 already excludes Power10 prefixed/pcrel instructions. Do not
+## add -mno-prefixed/-mno-pcrel: the gcc lit runs with is the distribution's
+## system compiler (8.5.0 on AlmaLinux 8), not whatever a login shell puts on
+## PATH, and it rejects both options.
+# RUN: gcc -O2 -mcpu=power8 -fno-pic -no-pie -Wl,--emit-relocs \
 # RUN:     -fno-optimize-sibling-calls -mtraceback=no \
 # RUN:     %S/Inputs/plt-call.c -o %t.exe
 # RUN: llvm-bolt %t.exe -o %t.bolt -lite 2>&1 | FileCheck %s
