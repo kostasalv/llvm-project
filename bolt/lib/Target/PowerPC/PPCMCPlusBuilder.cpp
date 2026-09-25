@@ -1438,25 +1438,84 @@ void PPCMCPlusBuilder::createLongTailCall(std::vector<MCInst> &Seq,
 
 using namespace llvm::ELF;
 
+/// Destructure a fixup value into the single symbol it refers to, a constant
+/// addend, and the PPC relocation specifier (@l, @ha, @highest, ...) that the
+/// symbol reference carries. Returns false if \p E has no such reading, leaving
+/// the outputs unusable.
+///
+/// This deliberately does not use MCPlusBuilder::extractFixupExpr(), for two
+/// reasons:
+///
+///  * That helper resolves the symbol through getTargetSymbol(), which returns
+///    nullptr for any MCSymbolRefExpr whose specifier is non-zero. On PPC64 a
+///    specifier selects which slice of the address goes into the field, not a
+///    different target entity, so `foo@ha` refers to `foo` exactly as `foo`
+///    does -- yet extractFixupExpr() reports no symbol for it. Every immediate
+///    of every address-materialization sequence carries such a specifier, which
+///    made the whole specifier switch below unreachable.
+///  * It *asserts* on shapes it cannot handle rather than failing, and PPC fixup
+///    values do reach createRelocation() in such shapes:
+///    replaceImmWithSymbolRef() wraps the symbol difference
+///    `(.TOC. + 4 - .Ltmp0)` in an MCSpecifierExpr for the ELFv2 global-entry
+///    TOC preamble. Failing lets us report the fixup as unhandled instead of
+///    aborting an assertions build.
+static bool destructureFixupValue(const MCExpr *E, const MCSymbol *&Symbol,
+                                  uint64_t &Addend, uint16_t &Specifier) {
+  if (!E)
+    return false;
+  switch (E->getKind()) {
+  case MCExpr::SymbolRef: {
+    // A relocation names exactly one symbol; a second one has nowhere to go.
+    if (Symbol)
+      return false;
+    const auto *SRE = cast<MCSymbolRefExpr>(E);
+    Symbol = &SRE->getSymbol();
+    Specifier = SRE->getSpecifier();
+    return true;
+  }
+  case MCExpr::Constant:
+    Addend += cast<MCConstantExpr>(E)->getValue();
+    return true;
+  case MCExpr::Binary: {
+    // Only addition folds into (symbol, addend): a subtraction of two symbols
+    // is not expressible as one ELF relocation.
+    const auto *BE = cast<MCBinaryExpr>(E);
+    if (BE->getOpcode() != MCBinaryExpr::Add)
+      return false;
+    return destructureFixupValue(BE->getLHS(), Symbol, Addend, Specifier) &&
+           destructureFixupValue(BE->getRHS(), Symbol, Addend, Specifier);
+  }
+  default:
+    // MCSpecifierExpr (an @-modifier applied to a whole expression), unary and
+    // target-specific expressions have no single-symbol reading.
+    return false;
+  }
+}
+
 std::optional<Relocation>
 PPCMCPlusBuilder::createRelocation(const MCFixup &Fixup,
                                    const MCAsmBackend &MAB) const {
   Relocation R;
   R.Offset = Fixup.getOffset();
 
-  // Extract (Symbol, Addend) from the fixup expression.
-  auto [RelSymbol, RelAddend] = extractFixupExpr(Fixup);
-  if (!RelSymbol)
+  // Extract (Symbol, Addend, Specifier) from the fixup expression.
+  const MCSymbol *RelSymbol = nullptr;
+  uint64_t RelAddend = 0;
+  uint16_t Specifier = PPC::S_None;
+  if (!destructureFixupValue(Fixup.getValue(), RelSymbol, RelAddend,
+                             Specifier) ||
+      !RelSymbol)
     return std::nullopt;
 
   R.Symbol = const_cast<MCSymbol *>(RelSymbol);
+  R.Addend = RelAddend;
 
   // PPC64 ELFv2: the generic MCFixupKindInfo name (e.g. "fixup_ppc_half16")
   // is IDENTICAL for every symbol-modifier variant of a half16 relocation
   // (@l, @ha, @high, @higha, @higher, @highera, @highest, @highesta) --
   // upstream PPCELFObjectWriter.cpp distinguishes them by inspecting the
   // MCSymbolRefExpr's *specifier* (PPC::S_LO, S_HA, S_HIGHEST, ...), not the
-  // fixup kind name.  createRelocation() below only looked at the fixup kind
+  // fixup kind name.  createRelocation() once only looked at the fixup kind
   // name, so every one of these variants fell through to the same generic
   // "TargetSize==16 -> R_PPC64_ADDR16_LO" fallback -- silently corrupting any
   // multi-instruction absolute address sequence (e.g. LongJmpPass's 7-
@@ -1465,173 +1524,132 @@ PPCMCPlusBuilder::createRelocation(const MCFixup &Fixup,
   // part of the address it was supposed to hold.  This manifested as PPC64
   // long-jump stubs branching to a garbage address (SIGSEGV) at runtime.
   //
-  // Fix: find the innermost MCSymbolRefExpr in the fixup's value expression
-  // and check its specifier directly, before falling back to the generic
-  // by-name/by-size heuristics.
-  auto FindSpecifier = [](const MCExpr *E) -> std::optional<uint16_t> {
-    while (E) {
-      if (E->getKind() == MCExpr::SymbolRef)
-        return cast<MCSymbolRefExpr>(E)->getSpecifier();
-      if (E->getKind() == MCExpr::Binary) {
-        // Addend expressions are Sym + Const (see extractFixupExpr); the
-        // symbol side is whichever operand is not a plain constant.
-        const auto *BE = cast<MCBinaryExpr>(E);
-        if (BE->getLHS()->getKind() != MCExpr::Constant) {
-          E = BE->getLHS();
-          continue;
-        }
-        E = BE->getRHS();
-        continue;
-      }
-      return std::nullopt;
-    }
-    return std::nullopt;
-  };
+  // So the specifier decides first, and only a fixup with no specifier at all
+  // is left to its kind.
 
-  if (std::optional<uint16_t> Spec = FindSpecifier(Fixup.getValue())) {
-    switch (*Spec) {
-    case PPC::S_LO:
-      R.Type = ELF::R_PPC64_ADDR16_LO;
-      return R;
-    case PPC::S_HI:
-      R.Type = ELF::R_PPC64_ADDR16_HI;
-      return R;
-    case PPC::S_HA:
-      R.Type = ELF::R_PPC64_ADDR16_HA;
-      return R;
-    case PPC::S_HIGH:
-      R.Type = ELF::R_PPC64_ADDR16_HIGH;
-      return R;
-    case PPC::S_HIGHA:
-      R.Type = ELF::R_PPC64_ADDR16_HIGHA;
-      return R;
-    case PPC::S_HIGHER:
-      R.Type = ELF::R_PPC64_ADDR16_HIGHER;
-      return R;
-    case PPC::S_HIGHERA:
-      R.Type = ELF::R_PPC64_ADDR16_HIGHERA;
-      return R;
-    case PPC::S_HIGHEST:
-      R.Type = ELF::R_PPC64_ADDR16_HIGHEST;
-      return R;
-    case PPC::S_HIGHESTA:
-      R.Type = ELF::R_PPC64_ADDR16_HIGHESTA;
-      return R;
-    default:
-      break; // Not a half16-family specifier; fall through to name matching.
-    }
-  }
-
+  // PPCFixupKinds.h numbers its enumerators starting at FirstTargetFixupKind,
+  // so a PPC fixup kind compares directly against the MCFixupKind value and
+  // can never collide with a generic FK_* kind.
   const MCFixupKind Kind = Fixup.getKind();
-  const MCFixupKindInfo FKI = MAB.getFixupKindInfo(Kind);
-  llvm::StringRef Name = FKI.Name;
 
-  // Make a lowercase copy for case-insensitive matching.
-  std::string L = Name.lower();
+  // DS-form (ld/std) and DQ-form (lxv/stxv) instructions only own bits 2..15
+  // of the half-word the fixup covers: the low two bits are part of the
+  // opcode. They need the _DS relocation types, whose encoders leave those
+  // bits alone. Writing a plain 16-bit type here overwrites them and silently
+  // turns the instruction into a different one -- `ld` becomes `lwa`.
+  const bool IsDSForm =
+      Kind == PPC::fixup_ppc_half16ds || Kind == PPC::fixup_ppc_half16dq;
 
-  // Branch/call (24-bit) — BL/B
-  if (Name.equals_insensitive("fixup_ppc_br24") ||
-      Name.equals_insensitive("fixup_branch24") ||
-      L.find("br24") != std::string::npos) {
-    R.Type = ELF::R_PPC64_REL24;
+  switch (Specifier) {
+  case PPC::S_LO:
+    R.Type = IsDSForm ? ELF::R_PPC64_ADDR16_LO_DS : ELF::R_PPC64_ADDR16_LO;
     return R;
-  }
-
-  // Conditional branch (14-bit) — BC/BDNZ/…
-  if (Name.equals_insensitive("fixup_ppc_brcond14") ||
-      Name.equals_insensitive("fixup_branch14") ||
-      L.find("br14") != std::string::npos ||
-      L.find("cond14") != std::string::npos) {
-    R.Type = ELF::R_PPC64_REL14;
+  case PPC::S_HI:
+    R.Type = ELF::R_PPC64_ADDR16_HI;
     return R;
-  }
-
-  // DS-form low16 (implied 2 zero bits)
-  if (Name.equals_insensitive("fixup_ppc_half16ds")) {
-    R.Type = ELF::R_PPC64_ADDR16_LO_DS;
-    return R;
-  }
-  // Generic half16 — in our stub we use it with ADDIS (HA)
-  if (Name.equals_insensitive("fixup_ppc_half16")) {
+  case PPC::S_HA:
     R.Type = ELF::R_PPC64_ADDR16_HA;
     return R;
-  }
-  if (Name.equals_insensitive("fixup_ppc_addr32") ||
-      L.find("addr32") != std::string::npos) {
-    R.Type = ELF::R_PPC64_ADDR32;
+  case PPC::S_HIGH:
+    R.Type = ELF::R_PPC64_ADDR16_HIGH;
     return R;
-  }
-  if (Name.equals_insensitive("fixup_ppc_addr64") ||
-      L.find("addr64") != std::string::npos) {
-    R.Type = ELF::R_PPC64_ADDR64;
+  case PPC::S_HIGHA:
+    R.Type = ELF::R_PPC64_ADDR16_HIGHA;
     return R;
+  case PPC::S_HIGHER:
+    R.Type = ELF::R_PPC64_ADDR16_HIGHER;
+    return R;
+  case PPC::S_HIGHERA:
+    R.Type = ELF::R_PPC64_ADDR16_HIGHERA;
+    return R;
+  case PPC::S_HIGHEST:
+    R.Type = ELF::R_PPC64_ADDR16_HIGHEST;
+    return R;
+  case PPC::S_HIGHESTA:
+    R.Type = ELF::R_PPC64_ADDR16_HIGHESTA;
+    return R;
+  case PPC::S_None:
+    break; // No specifier: the fixup kind alone decides, below.
+
+  default:
+    // Any other specifier (@got, @toc, @plt, @tprel, ...) redirects the
+    // reference to a different entity -- a GOT or TOC slot, a PLT stub, a TLS
+    // offset -- rather than selecting a slice of the symbol's own address, so
+    // the fixup kind cannot name the relocation either. Report the fixup as
+    // unhandled instead of guessing a plain ADDR16 and writing the wrong value.
+    LLVM_DEBUG(dbgs() << "PPC createRelocation: unhandled specifier "
+                      << Specifier << "\n");
+    return std::nullopt;
   }
 
-  // TOC-related (match loosely)
-  if (L.find("toc16_lo") != std::string::npos) {
-    R.Type = ELF::R_PPC64_TOC16_LO;
+  // No relocation specifier: the fixup kind alone decides the type.
+  //
+  // This used to be a chain of substring matches on MAB.getFixupKindInfo()'s
+  // name, which was both too loose and partly unreachable: "br24" also matches
+  // fixup_ppc_br24abs, so an absolute branch was reported as a PC-relative
+  // one; and the checks for "toc16_lo_ds"/"toc16_ds" sat *after* the
+  // "toc16_lo"/"toc16" checks that shadow them. (The whole TOC group was dead
+  // regardless -- PPCFixupKinds.h has no toc16 fixup at all; upstream spells
+  // those with a relocation specifier on a half16 fixup, handled above.)
+  // Switching on the enum makes the mapping exact and the gaps visible.
+  switch (Kind) {
+  case PPC::fixup_ppc_br24:
+  // A "notoc" call differs from a plain one in the TOC convention at the call
+  // site, not in the field layout, and BOLT only ever rewrites the
+  // displacement, so REL24 describes this fixup accurately.
+  case PPC::fixup_ppc_br24_notoc:
+    R.Type = ELF::R_PPC64_REL24;
     return R;
-  }
-  if (L.find("toc16_ha") != std::string::npos) {
-    R.Type = ELF::R_PPC64_TOC16_HA;
-    return R;
-  }
-  if (Name.equals_insensitive("fixup_ppc_toc") ||
-      L.find("toc16") != std::string::npos) {
-    // Generic TOC16 fallback if needed
-    R.Type = ELF::R_PPC64_TOC16;
-    return R;
-  }
 
-  if (L.find("toc16_lo_ds") != std::string::npos) {
-    // TOC16_LO_DS can be optimized to R_GOTREL if tocOptimize is on
-    R.Type = ELF::R_PPC64_TOC16_LO_DS;
+  case PPC::fixup_ppc_brcond14:
+    R.Type = ELF::R_PPC64_REL14;
     return R;
-  }
-  if (L.find("toc16_ds") != std::string::npos) {
-    R.Type = ELF::R_PPC64_TOC16_DS;
+
+  case PPC::fixup_ppc_half16:
+    R.Type = ELF::R_PPC64_ADDR16;
     return R;
-  }
-  if (L.find("addr16_lo_ds") != std::string::npos) {
-    R.Type = ELF::R_PPC64_ADDR16_LO_DS;
-    return R;
-  }
-  if (L.find("addr16_ds") != std::string::npos) {
+
+  case PPC::fixup_ppc_half16ds:
+  case PPC::fixup_ppc_half16dq:
     R.Type = ELF::R_PPC64_ADDR16_DS;
     return R;
+
+  // 'ba'/'bla' and 'bca'/'bcla' hold an *absolute* target, so REL24/REL14 --
+  // which make BOLT rewrite the field as a displacement from the instruction
+  // -- are precisely wrong. R_PPC64_ADDR24/ADDR14 are not supported anywhere
+  // else in BOLT (getSizeForTypePPC64() would reach llvm_unreachable), so
+  // report the fixup as unhandled and let the caller leave the site alone.
+  case PPC::fixup_ppc_br24abs:
+  case PPC::fixup_ppc_brcond14abs:
+  // Power10 prefixed-instruction fixups cover a 32-/34-bit field split across
+  // two words. BOLT has no relocation type for those either.
+  case PPC::fixup_ppc_pcrel32:
+  case PPC::fixup_ppc_imm32:
+  case PPC::fixup_ppc_pcrel34:
+  case PPC::fixup_ppc_imm34:
+  // Not a fixup at all: a marker tying a symbol to __tls_get_addr.
+  case PPC::fixup_ppc_nofixup:
+    break;
+
+  // Generic data fixups. Instruction encoding does not produce these, but they
+  // have an unambiguous PPC64 counterpart.
+  case FK_Data_4:
+    R.Type = ELF::R_PPC64_ADDR32;
+    return R;
+  case FK_Data_8:
+    R.Type = ELF::R_PPC64_ADDR64;
+    return R;
+
+  default:
+    break;
   }
 
-  // --- Fallback heuristic: use PCRel + bit-size ---
-  if (Fixup.isPCRel()) {
-    switch (FKI.TargetSize) {
-    case 24:
-      R.Type = ELF::R_PPC64_REL24;
-      return R;
-    case 14:
-      R.Type = ELF::R_PPC64_REL14;
-      return R;
-    default:
-      break;
-    }
-  } else {
-    switch (FKI.TargetSize) {
-    case 16:
-      R.Type = ELF::R_PPC64_ADDR16_LO;
-      return R; // safest low-16 default
-    case 32:
-      R.Type = ELF::R_PPC64_ADDR32;
-      return R;
-    case 64:
-      R.Type = ELF::R_PPC64_ADDR64;
-      return R;
-    default:
-      break;
-    }
-  }
-
-  LLVM_DEBUG(dbgs() << "PPC createRelocation: unhandled fixup kind '" << Name
-                    << "', size=" << FKI.TargetSize
-                    << ", isPCRel=" << Fixup.isPCRel() << "\n");
+  LLVM_DEBUG({
+    const MCFixupKindInfo FKI = MAB.getFixupKindInfo(Kind);
+    dbgs() << "PPC createRelocation: unhandled fixup kind '" << FKI.Name
+           << "', size=" << FKI.TargetSize
+           << ", isPCRel=" << Fixup.isPCRel() << "\n";
+  });
   return std::nullopt;
 }
 
