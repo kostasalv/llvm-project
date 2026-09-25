@@ -1347,6 +1347,13 @@ const MCExpr *Relocation::createExpr(MCStreamer *Streamer) const {
   // PPC64 handling: don't compose relocation expressions for these relocation
   // types since these are handled natively by PPC64 backend. The back end will
   // attach the appropriate @ha/@lo/@ds fixups to the individual instructinos.
+  //
+  // Relocations that do not encode an instruction immediate must not be listed
+  // here. R_PPC64_ADDR64 in particular is a plain 64-bit data word: there is no
+  // immediate field to double-encode, and dropping its addend collapses every
+  // "section symbol + offset" entry of a data section onto the section base.
+  // That is how .init_array used to be emitted with all of its slots pointing
+  // at the start of .text.
   if (Arch == Triple::ppc64 || Arch == Triple::ppc64le) {
     switch (Type) {
     case ELF::R_PPC64_ADDR16:
@@ -1365,8 +1372,7 @@ const MCExpr *Relocation::createExpr(MCStreamer *Streamer) const {
     case ELF::R_PPC64_REL14_BRTAKEN:
     case ELF::R_PPC64_REL14_BRNTAKEN:
     case ELF::R_PPC64_REL24:
-    case ELF::R_PPC64_REL32:
-    case ELF::R_PPC64_ADDR64: {
+    case ELF::R_PPC64_REL32: {
       LLVM_DEBUG(dbgs() << "[reloc][skipCompose] Arch=" << Arch
                         << " Type=" << Type << " (native handled)\n");
       // IMPORTANT: ignore Addend to avoid double-encoding the immediate
