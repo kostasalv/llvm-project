@@ -8,18 +8,44 @@
 //===----------------------------------------------------------------------===//
 
 #include "bolt/Target/PowerPC/PPCMCPlusBuilder.h"
+#include "MCTargetDesc/PPCFixupKinds.h"
+#include "MCTargetDesc/PPCMCAsmInfo.h"
 #include "MCTargetDesc/PPCMCTargetDesc.h"
 #include "bolt/Core/BinaryContext.h"
 #include "bolt/Core/MCPlusBuilder.h"
+#include "bolt/Core/Relocation.h"
 #include "bolt/Rewrite/RewriteInstance.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
+#include "llvm/MC/MCAsmBackend.h"
+#include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Support/TargetSelect.h"
 #include "gtest/gtest.h"
+
+// glibc's <elf.h> defines the whole R_PPC64_* relocation list as object-like
+// macros, and on a ppc64le host it reaches this translation unit through the
+// system headers pulled in above -- turning `ELF::R_PPC64_ADDR16` into `ELF::3`
+// and failing the build with "expected unqualified-id before numeric constant".
+// Drop the ones named below so the llvm::ELF enumerators are visible.
+#undef R_PPC64_REL14
+#undef R_PPC64_REL24
+#undef R_PPC64_ADDR16
+#undef R_PPC64_ADDR16_DS
+#undef R_PPC64_ADDR16_HA
+#undef R_PPC64_ADDR16_HI
+#undef R_PPC64_ADDR16_HIGH
+#undef R_PPC64_ADDR16_HIGHA
+#undef R_PPC64_ADDR16_HIGHER
+#undef R_PPC64_ADDR16_HIGHERA
+#undef R_PPC64_ADDR16_HIGHEST
+#undef R_PPC64_ADDR16_HIGHESTA
+#undef R_PPC64_ADDR16_LO
+#undef R_PPC64_ADDR16_LO_DS
 
 using namespace llvm;
 using namespace llvm::object;
@@ -144,6 +170,24 @@ protected:
     MCSymbol *Sym = BC->Ctx->getOrCreateSymbol(TargetName);
     I.addOperand(MCOperand::createExpr(MCSymbolRefExpr::create(Sym, *BC->Ctx)));
     return I;
+  }
+
+  // A symbol reference, optionally carrying a PPC relocation specifier
+  // (@l, @ha, @highest, ...). This is the shape createLongTailCall() and
+  // createLongJmp() build their immediates from.
+  const MCExpr *symExpr(StringRef Name, uint16_t Spec = PPC::S_None) {
+    MCSymbol *Sym = BC->Ctx->getOrCreateSymbol(Name);
+    return MCSymbolRefExpr::create(Sym, Spec, *BC->Ctx);
+  }
+
+  // Map a fixup of the given PPC fixup kind, carrying \p Value, the way
+  // BinaryFunction::scanExternalRefs() does after re-encoding an instruction.
+  // PPCFixupKinds.h numbers its enumerators from FirstTargetFixupKind, so they
+  // are already MCFixupKind values.
+  std::optional<Relocation> relocForFixup(MCFixupKind Kind,
+                                          const MCExpr *Value) {
+    MCFixup F = MCFixup::create(/*Offset=*/0, Value, Kind);
+    return BC->MIB->createRelocation(F, *BC->MAB);
   }
 
   char ElfBuf[sizeof(ELF64LE::Ehdr)] = {};
@@ -483,6 +527,179 @@ TEST_F(PPCMCPlusBuilderFixture, CreateLongJmp_Call_TerminatorIsClassified) {
   MCInst &Last = Seq.back();
   EXPECT_TRUE(BC->MIB->isCall(Last)) << "a call stub must link";
   EXPECT_TRUE(BC->MIB->isIndirectBranch(Last));
+}
+
+// --- createRelocation(): fixup kind -> PPC64 relocation type ---
+//
+// BinaryFunction::scanExternalRefs() re-encodes the instructions of a function
+// BOLT is not going to rewrite and turns each resulting MCFixup into a
+// relocation through this hook, then hands the type straight to
+// Relocation::getSizeForType(). A wrong type here therefore either patches the
+// wrong bits into a live instruction or trips getSizeForTypePPC64()'s
+// llvm_unreachable, both silently in a release build.
+
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_DirectBranchesArePCRelative) {
+  std::optional<Relocation> Br24 =
+      relocForFixup(PPC::fixup_ppc_br24, symExpr("callee"));
+  ASSERT_TRUE(Br24.has_value());
+  EXPECT_EQ(Br24->Type, uint32_t(ELF::R_PPC64_REL24));
+
+  // A "notoc" call differs only in the TOC convention at the call site, not in
+  // the field BOLT rewrites.
+  std::optional<Relocation> Notoc =
+      relocForFixup(PPC::fixup_ppc_br24_notoc, symExpr("callee"));
+  ASSERT_TRUE(Notoc.has_value());
+  EXPECT_EQ(Notoc->Type, uint32_t(ELF::R_PPC64_REL24));
+
+  std::optional<Relocation> Cond14 =
+      relocForFixup(PPC::fixup_ppc_brcond14, symExpr("taken"));
+  ASSERT_TRUE(Cond14.has_value());
+  EXPECT_EQ(Cond14->Type, uint32_t(ELF::R_PPC64_REL14));
+}
+
+// 'ba'/'bla' and 'bca'/'bcla' hold an absolute target. Reporting them as
+// REL24/REL14 -- which the old substring match on "br24"/"cond14" did, since
+// those substrings also occur in fixup_ppc_br24abs/fixup_ppc_brcond14abs --
+// makes BOLT rewrite the field as a displacement from the instruction, i.e.
+// with the opposite meaning.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_AbsoluteBranchesAreRejected) {
+  EXPECT_FALSE(
+      relocForFixup(PPC::fixup_ppc_br24abs, symExpr("abs_target")).has_value());
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_brcond14abs, symExpr("abs_target"))
+                   .has_value());
+}
+
+// The 32-/34-bit Power10 prefixed-instruction fixups span two words and have no
+// BOLT relocation type at all; guessing one would corrupt the prefix.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_PrefixedFixupsAreRejected) {
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_pcrel34, symExpr("d")).has_value());
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_imm34, symExpr("d")).has_value());
+  EXPECT_FALSE(
+      relocForFixup(PPC::fixup_ppc_pcrel32, symExpr("d")).has_value());
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_imm32, symExpr("d")).has_value());
+}
+
+// Every half16 variant shares one fixup kind and is distinguished only by the
+// relocation specifier on the symbol reference, so each must be read off the
+// specifier rather than the kind.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_Half16FollowsTheSpecifier) {
+  struct {
+    uint16_t Spec;
+    uint32_t Type;
+  } Cases[] = {
+      {PPC::S_None, ELF::R_PPC64_ADDR16},
+      {PPC::S_LO, ELF::R_PPC64_ADDR16_LO},
+      {PPC::S_HI, ELF::R_PPC64_ADDR16_HI},
+      {PPC::S_HA, ELF::R_PPC64_ADDR16_HA},
+      {PPC::S_HIGH, ELF::R_PPC64_ADDR16_HIGH},
+      {PPC::S_HIGHA, ELF::R_PPC64_ADDR16_HIGHA},
+      {PPC::S_HIGHER, ELF::R_PPC64_ADDR16_HIGHER},
+      {PPC::S_HIGHERA, ELF::R_PPC64_ADDR16_HIGHERA},
+      {PPC::S_HIGHEST, ELF::R_PPC64_ADDR16_HIGHEST},
+      {PPC::S_HIGHESTA, ELF::R_PPC64_ADDR16_HIGHESTA},
+  };
+
+  for (const auto &C : Cases) {
+    std::optional<Relocation> R =
+        relocForFixup(PPC::fixup_ppc_half16, symExpr("sym", C.Spec));
+    ASSERT_TRUE(R.has_value()) << "specifier " << C.Spec;
+    EXPECT_EQ(R->Type, C.Type) << "specifier " << C.Spec;
+    // getSizeForTypePPC64() llvm_unreachable()s on a type it does not list,
+    // and scanExternalRefs() calls it on whatever comes back from here.
+    EXPECT_EQ(Relocation::getSizeForType(R->Type), 2u) << "specifier "
+                                                       << C.Spec;
+  }
+}
+
+// DS-form (ld/std) and DQ-form (lxv/stxv) instructions own only bits 2..15 of
+// the half word the fixup covers; the low two bits belong to the opcode. The
+// non-DS relocation types overwrite them, which turns `ld` into `lwa`.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_DSFormKeepsTheOpcodeBits) {
+  std::optional<Relocation> DS =
+      relocForFixup(PPC::fixup_ppc_half16ds, symExpr("sym", PPC::S_LO));
+  ASSERT_TRUE(DS.has_value());
+  EXPECT_EQ(DS->Type, uint32_t(ELF::R_PPC64_ADDR16_LO_DS));
+  EXPECT_EQ(Relocation::getSizeForType(DS->Type), 2u);
+
+  std::optional<Relocation> DQ =
+      relocForFixup(PPC::fixup_ppc_half16dq, symExpr("sym", PPC::S_LO));
+  ASSERT_TRUE(DQ.has_value());
+  EXPECT_EQ(DQ->Type, uint32_t(ELF::R_PPC64_ADDR16_LO_DS));
+
+  std::optional<Relocation> NoSpec =
+      relocForFixup(PPC::fixup_ppc_half16ds, symExpr("sym"));
+  ASSERT_TRUE(NoSpec.has_value());
+  EXPECT_EQ(NoSpec->Type, uint32_t(ELF::R_PPC64_ADDR16_DS));
+  EXPECT_EQ(Relocation::getSizeForType(NoSpec->Type), 2u);
+
+  // Same specifier on a D-form fixup keeps the plain type.
+  std::optional<Relocation> D =
+      relocForFixup(PPC::fixup_ppc_half16, symExpr("sym", PPC::S_LO));
+  ASSERT_TRUE(D.has_value());
+  EXPECT_EQ(D->Type, uint32_t(ELF::R_PPC64_ADDR16_LO));
+}
+
+// A specifier that redirects the reference to another entity -- a GOT or TOC
+// slot, a PLT stub, a TLS offset -- cannot be described by a plain ADDR16, so
+// the fixup has to be declined rather than mapped by its kind.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_OtherSpecifiersAreRejected) {
+  for (uint16_t Spec : {PPC::S_GOT, PPC::S_GOT_HA, PPC::S_TOC, PPC::S_TOC_LO,
+                        PPC::S_PLT, PPC::S_TPREL, PPC::S_DTPREL_HA})
+    EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, symExpr("sym", Spec))
+                     .has_value())
+        << "specifier " << Spec;
+}
+
+// The addend has to survive: scanExternalRefs() re-emits the relocation as
+// (Symbol, Type, Addend), so dropping it retargets `sym + 8` at `sym`.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_KeepsTheAddend) {
+  const MCExpr *SymPlus8 =
+      MCBinaryExpr::createAdd(symExpr("sym", PPC::S_LO),
+                              MCConstantExpr::create(8, *BC->Ctx), *BC->Ctx);
+  std::optional<Relocation> R =
+      relocForFixup(PPC::fixup_ppc_half16, SymPlus8);
+  ASSERT_TRUE(R.has_value());
+  EXPECT_EQ(R->Type, uint32_t(ELF::R_PPC64_ADDR16_LO));
+  EXPECT_EQ(R->Symbol->getName(), "sym");
+  EXPECT_EQ(R->Addend, 8u);
+
+  // `Sym + C + C` folds into a single addend, as the assembler may leave it.
+  const MCExpr *SymPlus12 = MCBinaryExpr::createAdd(
+      SymPlus8, MCConstantExpr::create(4, *BC->Ctx), *BC->Ctx);
+  std::optional<Relocation> R2 =
+      relocForFixup(PPC::fixup_ppc_half16, SymPlus12);
+  ASSERT_TRUE(R2.has_value());
+  EXPECT_EQ(R2->Addend, 12u);
+}
+
+// One relocation names one symbol. A sum of two is not expressible, and picking
+// either one silently relocates against the wrong target.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_RejectsTwoSymbols) {
+  const MCExpr *Sum = MCBinaryExpr::createAdd(
+      symExpr("a", PPC::S_LO), symExpr("b", PPC::S_LO), *BC->Ctx);
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, Sum).has_value());
+}
+
+// replaceImmWithSymbolRef() builds `(.TOC. + 4 - .Ltmp0)@l` for the ELFv2
+// global-entry TOC preamble -- an MCSpecifierExpr wrapping a subtraction -- and
+// those instructions do reach scanExternalRefs() for any function BOLT decides
+// not to rewrite. Neither shape is one relocation, and
+// MCPlusBuilder::extractFixupExpr() (which handles only `Sym`, `Sym + C` and
+// `Sym + C + C`) asserts on both, so the hook has to decline such a fixup
+// itself rather than abort an assertions build.
+TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_RejectsUnparsableExpressions) {
+  MCSymbol *TOC = BC->Ctx->getOrCreateSymbol(".TOC.");
+  MCSymbol *Label = BC->Ctx->getOrCreateSymbol(".Ltmp0");
+  const MCExpr *Diff = MCBinaryExpr::createSub(
+      MCBinaryExpr::createAdd(MCSymbolRefExpr::create(TOC, *BC->Ctx),
+                              MCConstantExpr::create(4, *BC->Ctx), *BC->Ctx),
+      MCSymbolRefExpr::create(Label, *BC->Ctx), *BC->Ctx);
+  const MCExpr *Preamble =
+      MCSpecifierExpr::create(Diff, PPC::S_LO, *BC->Ctx);
+
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, Preamble).has_value());
+  // The bare subtraction is just as unparsable, without the wrapper.
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, Diff).has_value());
 }
 
 #endif // POWERPC_AVAILABLE

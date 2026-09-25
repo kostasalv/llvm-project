@@ -307,6 +307,20 @@ static size_t getSizeForTypePPC64(uint32_t Type) {
   case ELF::R_PPC64_ADDR16_LO:
   case ELF::R_PPC64_ADDR16_HI:
   case ELF::R_PPC64_ADDR16_HA:
+  // The remaining half16 variants cover the same two bytes; they differ only
+  // in which slice of the address gets written there. PPCMCPlusBuilder::
+  // createRelocation() derives all of them from a half16 fixup's relocation
+  // specifier, and BinaryFunction::scanExternalRefs() passes whatever it
+  // returns straight to Relocation::getSizeForType(), so omitting any of them
+  // here turns a valid mapping into an llvm_unreachable.
+  case ELF::R_PPC64_ADDR16_DS:
+  case ELF::R_PPC64_ADDR16_LO_DS:
+  case ELF::R_PPC64_ADDR16_HIGH:
+  case ELF::R_PPC64_ADDR16_HIGHA:
+  case ELF::R_PPC64_ADDR16_HIGHER:
+  case ELF::R_PPC64_ADDR16_HIGHERA:
+  case ELF::R_PPC64_ADDR16_HIGHEST:
+  case ELF::R_PPC64_ADDR16_HIGHESTA:
   case ELF::R_PPC64_TOC16:
   case ELF::R_PPC64_TOC16_LO:
   case ELF::R_PPC64_TOC16_HI:
