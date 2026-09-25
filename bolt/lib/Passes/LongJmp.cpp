@@ -168,6 +168,20 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
         std::make_pair(AtAddress, StubBB.get()));
   };
 
+  // A stub basic block physically lives inside the function that created it,
+  // so sharing its label with another function is only sound if that owner is
+  // guaranteed to reach the output.  In non-relocation mode it is not:
+  // CheckLargeFunctions runs *after* this pass and calls setSimple(false) on
+  // every function whose finalized body no longer fits its original
+  // allocation -- and a freshly inserted stub is exactly what pushes a
+  // function over that limit.  BinaryContext::shouldEmit() is isSimple() in
+  // that mode, so the owner and all of its blocks are dropped while the
+  // borrowers, which grew by nothing, are still emitted and still reference
+  // the stub label.  The result is "error: Undefined temporary symbol .LStubN"
+  // at emission time.  Keep stubs function-local unless we are rewriting with
+  // relocations, where no function is dropped this late.
+  const bool CanShareAcrossFunctions = opts::GroupStubs && BC.HasRelocations;
+
   Stubs[&Func].insert(StubBB.get());
   // Long-jump stubs are already at maximum encoding; set StubBits to 64 so
   // relaxStub() skips them (early return at the Bits==64 check).
@@ -180,12 +194,12 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   BBAddresses[StubBB.get()] = AtAddress;
   if (IsCold) {
     registerInMap(ColdLocalStubs[&Func]);
-    if (opts::GroupStubs && TgtIsFunc)
+    if (CanShareAcrossFunctions && TgtIsFunc)
       registerInMap(ColdStubGroups);
     ++NumColdStubs;
   } else {
     registerInMap(HotLocalStubs[&Func]);
-    if (opts::GroupStubs && TgtIsFunc)
+    if (CanShareAcrossFunctions && TgtIsFunc)
       registerInMap(HotStubGroups);
     ++NumHotStubs;
   }
