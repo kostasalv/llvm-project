@@ -541,3 +541,153 @@ merged-global immediates were only where it became visible. Resume from the `-S`
 diff with the pass disabled — see `HANDOFF-ppc64-addr64-rootcause.md`.
 
 This is independent of the `.init_array` corruption: criteria 1, 2 and 4 hold.
+
+## 15. Criterion 3 resolved: it was the test harness, not BOLT
+
+Redoing the `-S` comparison with `-mllvm -enable-global-merge=false` — so that
+the 3846 merged-global `addi` immediates stop drowning everything out — cut the
+diff from 4723 lines to **24**, and all 24 are the same four strings:
+
+```
+< 	.asciz	"/usr/lib/gcc/ppc64le-redhat-linux/8/../../../../include/c++/8/optional"
+< 	.size	.L.str.512, 71
+---
+> 	.asciz	"/tmp/../lib/gcc/ppc64le-redhat-linux/8/../../../../include/c++/8/optional"
+> 	.size	.L.str.512, 74
+```
+
+The other three are `stl_iterator_base_funcs.h`, `stl_vector.h` and
+`unique_ptr.h`. Clang's `Generic_GCC::GCCInstallationDetector` derives the GCC
+installation prefix from the **driver's own directory** when no
+`--gcc-toolchain` is given. The baseline is `~/llvm-build/bin/clang-24`, so it
+computes `/usr/lib/gcc/...`; the BOLTed copy is `/tmp/kosta-clang3.bolt`, so it
+computes `/tmp/../lib/gcc/...`. Confirmed straight from the driver:
+
+```
+base search:  /usr/lib/gcc/ppc64le-redhat-linux/8/../../../../include/c++/8
+bolt search:  /tmp/../lib/gcc/ppc64le-redhat-linux/8/../../../../include/c++/8
+```
+
+The TU is compiled with `-D_GLIBCXX_ASSERTIONS -UNDEBUG`, so libstdc++'s
+`assert()` calls embed those header paths as string literals in the object.
+`/usr` → `/tmp/..` is +3 bytes on each of four strings = +12, which with
+padding is the +16 delta seen with GlobalMerge off. With the pass on, the
+longer strings shift every subsequent merged-global offset, which is where the
+3846 changed `addi` immediates and the +9 growth of
+`.data.rel.ro..L_MergedGlobals.3020` came from.
+
+Pinning `-resource-dir` (which the earlier runs did) fixes the *resource*
+directory only; it does not touch the GCC prefix. Adding
+`--gcc-toolchain=/usr` to both compilations, with **no `-mllvm` knobs at all**,
+gives:
+
+```
+RESULT[gcctc]=IDENTICAL
+b7b5cd0a842e6d6072b97bb2c0535e64  /tmp/kosta-crit3f/gcctc-base.o
+b7b5cd0a842e6d6072b97bb2c0535e64  /tmp/kosta-crit3f/gcctc-bolt.o
+```
+
+**Criterion 3 passes.** The BOLTed clang compiles a 2.6 MB C++ translation unit
+to a byte-identical object. Nothing in LLVM was miscompiled; the measurement was
+sensitive to where the binary was placed.
+
+Two lessons for the harness, both now baked into `validate-head-dod.sh`:
+
+* comparing two builds of a compiler requires pinning **every** path the driver
+  derives from its own location, not just `-resource-dir`;
+* a diff dominated by one mechanical pattern (here, thousands of layout
+  immediates) should be re-taken with that mechanism disabled before any
+  conclusion is drawn from it. Doing so turned an open question into four lines.
+
+## 16. `R_PPC64_REL32` was reported as 8 bytes
+
+`getSizeForTypePPC64()` grouped `R_PPC64_REL32` with the `doubleword64` types.
+Figure 4-1 of the ELFv2 ABI gives it field `word32*`, calculation `S + A - P` —
+four bytes. It is the relocation `.eh_frame` uses for a
+`DW_EH_PE_pcrel|DW_EH_PE_sdata4` pointer, so it appears in real inputs.
+
+Both consumers of the width were wrong as a result:
+
+* `RewriteInstance::analyzeRelocation()` feeds it to
+  `getUnsignedValueAtAddress()`, so four bytes of the *following* field landed
+  in the extracted value and the check against
+  `truncateToSize(SymbolAddress + Addend - PCRelOffset, RelSize)` could not
+  match — each such relocation counted toward `Failed to analyze N relocations`.
+* `BinarySection::emitAsData()` steps over the width of each relocation, so it
+  skipped four bytes of real data after every `R_PPC64_REL32`.
+
+Fixed in `5473a91b5132`, with `bolt/unittests/Core/Relocation.cpp` covering the
+PPC64 width table. `getSizeForType()` dispatches only on the static
+`Relocation::Arch`, so the test needs neither a PowerPC backend nor PowerPC
+hardware — it runs anywhere, and it caught the discrepancy against x86's
+`R_X86_64_PC32` and AArch64's `R_AARCH64_PREL32`.
+
+### 16.1 The REL32 fix is latent on this binary — measured, not assumed
+
+Re-BOLTing clang at `5473a91b5132` left `Failed to analyze 10332 relocations`
+**exactly unchanged**. That is not a sign the fix is wrong; it is where the
+relocations live. The baseline `clang-24` (linked with `--emit-relocs`, as BOLT
+requires) contains 159744 `R_PPC64_REL32` relocations — the fifth most common
+type — and `.rela.eh_frame` accounts for 226031 entries:
+
+```
+1858839 R_PPC64_REL24        .rela.text            4561096
+1202794 R_PPC64_TOC16_HA     .rela.eh_frame         226031
+1158198 R_PPC64_TOC16_LO     .rela.data.rel.ro      173792
+ 187307 R_PPC64_ADDR64       .rela.data               9723
+ 159744 R_PPC64_REL32        .rela.branch_lt          7903
+```
+
+`RewriteInstance::readRelocations()` (RewriteInstance.cpp:3297) returns before
+`handleRelocation()` for a fixed set of section names:
+
+```cpp
+  const bool SkipRelocs = StringSwitch<bool>(RelocatedSectionName)
+                              .Cases({".plt", ".rela.plt", ".got.plt",
+                                      ".eh_frame", ".gcc_except_table"},
+                                     true)
+                              .Default(false);
+```
+
+So every `R_PPC64_REL32` in this binary is filtered out before the width is ever
+consulted, and neither the extracted-value check nor `emitAsData()` sees one.
+The fix is correct against the ABI and against both consumers' contracts, and it
+removes a trap for any input that does carry a `R_PPC64_REL32` outside
+`.eh_frame` — but it buys nothing measurable here, and the 10332 unanalyzed
+relocations have some other cause still to be found.
+
+## 17. All four definition-of-done criteria pass at `5473a91b5132`
+
+Full re-validation on cfarm135 with an `llvm-bolt` built at the branch head and
+a freshly BOLTed clang (`/tmp/kosta-clang4.bolt`), 18:42–19:21 UTC:
+
+| # | criterion | result |
+|---|---|---|
+| 1 | optimised clang starts cleanly 5/5 | **PASS** — 5/5 `rc=0` |
+| 2 | no increase in the `R_PPC64_REL24` clobber pattern | **PASS** — `ps_msub`/`vpmsumh` 0 baseline, 0 BOLTed |
+| 3 | byte-identical object for a large C++ TU | **PASS** — `b7b5cd0a842e6d6072b97bb2c0535e64` both |
+| 4 | `check-bolt` has no PowerPC-specific failures | **PASS** — PPC64 lit 10/10 |
+
+`.init_array`: 486 entries, 486 distinct, 0 at the old `.text` base, 0 near
+null. The criterion-3 MD5 is the same value the `--gcc-toolchain`-pinned run
+produced against the previous binary, so the REL32 change did not perturb the
+output either.
+
+Cross-target gate on cfarm14 for `5473a91b5132` (it touches
+`bolt/lib/Core/Relocation.cpp`, outside `bolt/lib/Target/PowerPC/`):
+`bolt/test/X86` + `bolt/test/AArch64` at `549f8b34c891` vs `5473a91b5132` —
+296 passed / 164 failed on both sides, FAIL lists identical, `DIFF_RC=0`.
+`CoreTests` builds and passes 50/50, including the 4 new `RelocationTester`
+cases.
+
+### Still not clean, and not claimed to be
+
+The BOLT log still carries, all pre-existing and all on the open list:
+
+* 3 `BOLT-ERROR: symbol seen in the middle of the function ...plt_branch...` —
+  the FDE-derived size inflation for linker stubs. These are the only
+  `BOLT-ERROR` lines; there are no assertion failures.
+* `Failed to analyze 10332 relocations` (see §16.1).
+* 5690 `internal call detected`, 5619 `unable to disassemble instruction at
+  offset`, 299 `failed to patch entries in`, 167 `corrupted control flow
+  detected`, 20 `unclaimed data relocation`.

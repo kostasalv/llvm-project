@@ -1,115 +1,81 @@
-# PPC64 BOLT: `.init_array` root cause fixed — resume point
+# PPC64 BOLT: the definition of done is met — state as of 2026-09-26 19:30 UTC
 
-Paused 2026-09-26 ~15:50 UTC for a laptop restart. Nothing is left running on
-cfarm135 or cfarm14: every remote command ran in the foreground of an `ssh`
-session, so they died with the disconnect. Nothing needs cleaning up before the
-restart.
+Nothing is left running on cfarm135 or cfarm14: every remote command ran in the
+foreground of an `ssh` session, so they died with the disconnect.
 
-## Landed and verified
+## All four criteria pass at branch head `5473a91b5132`
 
-Branch `bolt-ppc-fix-plt-runtime`, pushed to `origin`:
-
-| commit | what |
-|---|---|
-| `5f9d4365b05a` | stop discarding the addend of `R_PPC64_ADDR64` in `Relocation::createExpr` + new test `bolt/test/PPC64/addr64-data-addend.s` |
-| `8a4c11d3f08e` | `extractValuePPC64()` returns `Contents` for `R_PPC64_ADDR32`/`ADDR64` instead of `0` — **the actual root cause** |
-
-Full write-up: §12 of `cfarm135-plt-runtime-fix-findings.md`.
-
-## Definition-of-done status
+Re-measured from scratch at the head commit, not carried over from the earlier
+pass — `5473a91b5132` changes a relocation width, so every criterion had to be
+re-run against an `llvm-bolt` built at head and a freshly BOLTed clang
+(`/tmp/kosta-clang4.bolt`, 337991184 bytes, `rc=0`).
 
 | # | criterion | result |
 |---|---|---|
 | 1 | optimised clang starts cleanly 5/5 | **PASS** — 5/5 `rc=0` (was 5/5 `rc=139`) |
-| 2 | no increase in the `R_PPC64_REL24` clobber pattern | **PASS** — `ps_msub`/`vpmsumh` count 0 baseline, 0 BOLTed |
-| 3 | byte-identical object for a large C++ TU | **FAIL** — under diagnosis, see below |
-| 4 | `check-bolt` has no PowerPC-specific failures | PASS (earlier run: 462 passed / 20 failed, 4 fixed, 0 regressions) |
+| 2 | no increase in the `R_PPC64_REL24` clobber pattern | **PASS** — `ps_msub`/`vpmsumh` 0 baseline, 0 BOLTed |
+| 3 | byte-identical object for a large C++ TU | **PASS** — md5 `b7b5cd0a842e6d6072b97bb2c0535e64` on both |
+| 4 | `check-bolt` has no PowerPC-specific failures | **PASS** — PPC64 lit 10/10 |
 
-Supporting evidence for 1: the BOLTed clang's `.init_array` now holds
-**486 entries, 486 distinct, 0** pointing at the old `.text` base `0x10780060`
-and **0** below `0x1000`. Before the fix all 486 slots were `0x10780060`.
+`.init_array` in the BOLTed clang: **486 entries, 486 distinct, 0** at the old
+`.text` base `0x10780060`, **0** below `0x1000`. Before the fix all 486 slots
+held `0x10780060`.
 
-PPC64 lit tests on cfarm135: **10/10**, including the new reproducer.
+## Commits on `bolt-ppc-fix-plt-runtime`
 
-AGENTS.md cross-target gate on cfarm14 (both commits touch
-`bolt/lib/Core/Relocation.cpp`, i.e. outside `bolt/lib/Target/PowerPC/`):
-`bolt/test/X86` + `bolt/test/AArch64` at `bc4ce4e128d6` vs `8a4c11d3f08e` —
-296 passed / 164 failed on both sides, and the two FAIL lists are **identical
-test-for-test**. The raw `diff` looked dirty only because lit's `(N of 472)`
-progress index is scheduling order; `cfarm14-gate.sh` now strips it.
+| commit | what |
+|---|---|
+| `bc4ce4e128d6` | do not share stubs across functions without relocations |
+| `5f9d4365b05a` | keep the addend of `R_PPC64_ADDR64` in `Relocation::createExpr` + test `bolt/test/PPC64/addr64-data-addend.s` |
+| `8a4c11d3f08e` | `extractValuePPC64()` returns `Contents` for `R_PPC64_ADDR32`/`ADDR64` instead of `0` — **the `.init_array` root cause** |
+| `549f8b34c891` | findings: the ADDR64 root cause and the criterion-3 state |
+| `5473a91b5132` | report `R_PPC64_REL32` as 4 bytes + `bolt/unittests/Core/Relocation.cpp` |
 
-## Criterion 3: where the diagnosis stands
+Every one of these touches files outside `bolt/lib/Target/PowerPC/`, so all of
+them have been through the AGENTS.md cross-target gate on cfarm14:
+`bolt/test/X86` + `bolt/test/AArch64` at `549f8b34c891` vs `5473a91b5132` —
+296 passed / 164 failed on both sides, FAIL lists identical test-for-test,
+`DIFF_RC=0`. `CoreTests` 50/50 including the 4 new `RelocationTester` cases.
+(The raw `diff` looks dirty unless lit's `(N of 472)` progress index is
+stripped; `cfarm14-gate.sh` does that.)
 
-`llvm/lib/Target/X86/X86ISelLowering.cpp` (2.6 MB, picked automatically as the
-largest C++ TU in `compile_commands.json`), compiled with `-resource-dir`
-pinned to the same value for both binaries so that only the optimised code
-differs.
+## Criterion 3 was the harness, not the compiler
 
-Established:
+Full write-up in §15 of `cfarm135-plt-runtime-fix-findings.md`. In short:
+clang derives the **GCC installation prefix from the driver executable's own
+directory** when `--gcc-toolchain` is absent, so the baseline in
+`~/llvm-build/bin` searched `/usr/lib/gcc/ppc64le-redhat-linux/8/...` while the
+BOLTed copy in `/tmp` searched `/tmp/../lib/gcc/ppc64le-redhat-linux/8/...`.
+The TU is built with `-D_GLIBCXX_ASSERTIONS`, so `assert()` embeds those header
+paths as string literals; `/usr` → `/tmp/..` is +3 bytes on each of four
+strings, which with padding is the whole +16 object delta, and with GlobalMerge
+on it shifted 3846 merged-global immediates.
 
-* Both compilers are **deterministic** — two runs of each are byte-identical,
-  so this is not an ASLR/pointer-order artefact.
-* Object sizes 4091248 (base) vs 4091256 (BOLTed), +8 bytes.
-* Same section count (3283) and same `FUNC` symbol count (1392).
-* Exactly one section changes size: `.data.rel.ro..L_MergedGlobals.3020`,
-  `0x7fc6` → `0x7fcf` (+9). The first differing byte is file offset 40, which
-  is `e_shoff` — pure downstream shift.
-* The assembly diff is 4723 changed lines and is **entirely** merged-global
-  layout: 3846 `addi rX, rY, <imm>`, 10 `.size`, 8 `.asciz`, 4 `lhz`, 2 `ld`,
-  and the `.L.str.N = .L_MergedGlobals.M+offset` aliases.
-* Nothing is dropped. `.L.str.512` is present in both; it simply moves from
-  `.L_MergedGlobals.3019+20564` to `+24022`.
+**Pinning `-resource-dir` is not enough — it does not touch the GCC prefix.**
+Any future A/B of two clang binaries at different paths must pin
+`--gcc-toolchain=/usr` as well. With that one flag added and no `-mllvm` knobs
+at all, the objects are byte-identical.
 
-The obvious reading — that `llvm/lib/CodeGen/GlobalMerge.cpp` picks a different
-partition — was **tested and falsified** as the last thing before the pause.
-Recompiling both with `-mllvm -enable-global-merge=false`:
+Two lessons worth keeping:
 
-```
-nogm-base.o  4243728 bytes
-nogm-bolt.o  4243744 bytes   (+16)
-RESULT[nogm]=DIFFER  1160073 differing bytes, first at offset 40 (e_shoff)
-```
+* Pin *every* driver-derived path, not just the one you thought of.
+* When a diff is dominated by one mechanical pattern, re-take it with that
+  mechanism disabled before drawing a conclusion. Disabling GlobalMerge cut the
+  `-S` diff from 4723 lines to 24, and those 24 named the cause outright.
 
-So the divergence is **upstream of GlobalMerge**; the merged-global immediates
-were only where it surfaced. The `-S` diff needs redoing with the pass off, so
-that the layout noise is gone and the real difference is visible.
+## The REL32 fix is latent on this workload
 
-Resume here:
+`5473a91b5132` is correct against the ELFv2 ABI (`R_PPC64_REL32` is `word32*`,
+Figure 4-1) and fixes two real consumers, but it changed nothing measurable
+here: `Failed to analyze 10332 relocations` is byte-for-byte unchanged. Reason,
+measured: all 159744 `R_PPC64_REL32` relocations in `clang-24` live in
+`.rela.eh_frame` (226031 entries), and `RewriteInstance::readRelocations()`
+returns early for `.eh_frame` at `RewriteInstance.cpp:3297`. The 10332
+unanalyzed relocations therefore have a different cause, still to be found.
 
-1. `-S` from both with `-mllvm -enable-global-merge=false`, then diff. With
-   3846 `addi` immediates removed from the picture the residual diff should be
-   small and should name a function.
-2. Then narrow by section: `llvm-readelf -SW` on `nogm-base.o` vs
-   `nogm-bolt.o`, sorted, to find which section grew by 16 this time. The two
-   size deltas (+9 with the pass on, +16 with it off) are the cheapest handle
-   on what is actually changing.
-3. The cfarm135 build has assertions, so `-mllvm -debug-only=...` and
-   `-mllvm -print-after-all` both work under either binary. Diffing a
-   `-print-after-all` trace localizes the first pass whose output differs, and
-   that names the miscompiled code. It is large but decisive; pipe to a file in
-   `/tmp` and diff there rather than pulling it back.
-4. Worth keeping in mind: both binaries are deterministic and produce
-   semantically equivalent code, so whatever is wrong is a *value* that is
-   computed slightly differently, not a crash — most likely a comparator, a
-   size/alignment computation, or a hash.
+## Still open
 
-## Scripts (local, `/Users/konstantinosalvertis/LLVM/`)
-
-| script | deployed as | does |
-|---|---|---|
-| `build-lit-ppc64.sh` | `/tmp/kosta-build-lit.sh` | pull, `ninja -j16 llvm-bolt`, PPC64 lit |
-| `cfarm14-gate.sh` | `/tmp/kosta-c14-gate.sh` | the x86_64 + AArch64 two-point FAIL-list gate |
-| `validate-addr64-fix.sh` | `/tmp/kosta-validate-addr64.sh` | re-BOLT clang, 5 starts, `.init_array` scan (its inline python needs py3.6-safe `subprocess`; the fixed copy is in `criterion23.sh`) |
-| `criterion23.sh` | `/tmp/kosta-crit23.sh` | `.init_array` scan + criteria 2 and 3 |
-| `criterion3-diagnose.sh` | `/tmp/kosta-crit3d.sh` | determinism control + which section changed size |
-| `criterion3-asm-diff.sh` | `/tmp/kosta-crit3s.sh` | `-S` from both, diff the assembly |
-| `criterion3-localize.sh` | `/tmp/kosta-crit3l.sh` | classify the diff, then disable GlobalMerge |
-
-`criterion3-localize.sh` sources `/tmp/kosta-crit23/cmd.sh` for the TU and its
-flags, so run `criterion23.sh` first on a fresh machine.
-
-## Still open (unchanged by this work)
-
+* `Failed to analyze 10332 relocations` — **not** REL32-related (above).
 * Why six ctors (`X86PostLegalizerCombiner`, `X86PreLegalizerCombiner`,
   `RegAllocFast`, `RegAllocBasic`, `PassTimingInfo`, `ScheduleDAGVLIW`) are
   emitted with **zero** symbols while a healthy one gets three. Suspects: the
@@ -117,21 +83,48 @@ flags, so run `criterion23.sh` first on a fresh machine.
   `:4330-4331`, plus the silent `setSimple(false)` at `:4320`. Missed
   optimisation, not correctness — but it emits no diagnostic at all.
 * FDE-derived size inflation for `.plt_branch.`/`.plt_call.`/`.long_branch.`
-  stub symbols (`RewriteInstance.cpp:1298-1313`, `setMaxSize` at `:2307`) — 3
-  `symbol seen in the middle` errors.
-* `getSizeForTypePPC64` reports `R_PPC64_REL32` as 8 bytes; it is 4.
-* `BOLT-WARNING: Failed to analyze 10332 relocations` — expected to drop now
-  that `ExtractedValue` is right for `ADDR32`/`ADDR64`; re-measure.
+  stub symbols (`RewriteInstance.cpp:1298-1313`, `setMaxSize` at `:2307`) — the
+  3 `symbol seen in the middle` errors, which are the only `BOLT-ERROR` lines
+  in the log. There are no assertion failures.
+* The warning volume: 5690 `internal call detected`, 5619 `unable to disassemble
+  instruction at offset`, 299 `failed to patch entries in`, 167 `corrupted
+  control flow detected`, 20 `unclaimed data relocation`, and
+  `ignoring symbol __bss_start ... which lies outside .bss`.
 * `PPCMCSymbolizer.cpp` is dead code (§11 of the findings doc).
-* Feedback owed to the CLI agent on all of the above.
+* Why cfarm14 shows 164 X86+AArch64 failures where the same tree once showed
+  ~29; and how the cfarm135 FAIL list compares with cfarm120's 34 pre-existing
+  non-PPC64 failures.
+* Feedback owed to the CLI agent on all of the above, plus the `--gcc-toolchain`
+  harness lesson, the dead specifier dispatch, the glibc `<elf.h>` macro
+  collision, and the `.LStub2` cross-function shared-stub regression.
+* Next per the user's roadmap: rebase onto current upstream `main`, then look at
+  a call-relaxation/clustering pass (`--compact-code-model` first, with a ±32 MB
+  PPC64 branch budget). `--relax-exp` / CallRelaxation is not in this tree.
+
+## Scripts (local, `/Users/konstantinosalvertis/LLVM/`)
+
+| script | deployed as | does |
+|---|---|---|
+| `build-lit-ppc64.sh` | `/tmp/kosta-build-lit.sh` | pull, `ninja -j16 llvm-bolt`, PPC64 lit |
+| `cfarm14-gate.sh` | `/tmp/kosta-c14-gate.sh` | the x86_64 + AArch64 two-point FAIL-list gate, plus `CoreTests` |
+| `validate-head-dod.sh` | `/tmp/kosta-dod.sh` | **all four criteria in one run** — use this one |
+| `criterion23.sh` | `/tmp/kosta-crit23.sh` | `.init_array` scan + criteria 2 and 3; writes `/tmp/kosta-crit23/cmd.sh` |
+| `criterion3-final.sh` | `/tmp/kosta-crit3f.sh` | prints both drivers' include search paths, then the `--gcc-toolchain` A/B |
+| `criterion3-nogm-asm.sh` | `/tmp/kosta-crit3n.sh` | the probe that cracked criterion 3 (`-S` with GlobalMerge off). Its `sed`-based readelf column extraction is crude — it emitted 40 bogus `.group 000008 -> 00000c` lines; ignore that part |
+
+Several scripts source `/tmp/kosta-crit23/cmd.sh` for the TU and its flags, so
+run `criterion23.sh` first on a fresh machine. `validate-addr64-fix.sh` still
+has py3.6-incompatible inline python (`capture_output=`); the working version is
+in `validate-head-dod.sh`.
 
 ## Scratch to clean up on cfarm135 when convenient
 
-`/tmp/kosta-*` (scripts, `crit23/`, `crit3d/`, `crit3l/`, `crit3s/`, `a64/`,
-`clang{,2,3}.bolt`, `v{1..5}.txt`, `clangbolt*.log`, `sym*.txt`, `obj-*.txt`,
-`ia-rel.txt`, `ctors-*.txt`), `/tmp/output-ad9848.o`, `/tmp/output-8d6f96.o`,
-`~/llvm-build/bin/clang-bolted`, and any core dumps. `/tmp/kosta-clang3.bolt`
-is 338 MB and is the artefact criterion 3 is being diagnosed against — keep it
-until that is settled.
-
-Local terminal tabs to close: c123–c132.
+`/tmp/kosta-*` (scripts, `crit23/`, `crit3d/`, `crit3f/`, `crit3l/`, `crit3n/`,
+`crit3s/`, `dod/`, `a64/`, `clang{,2,3,4}.bolt`, `v{1..5}.txt`,
+`clangbolt*.log`, `sym*.txt`, `obj-*.txt`, `ia-rel.txt`, `ctors-*.txt`),
+`/tmp/output-ad9848.o`, `/tmp/output-8d6f96.o`, `~/llvm-build/bin/clang-bolted`,
+and any core dumps. Criterion 3 is settled, so `/tmp/kosta-clang3.bolt` is no
+longer needed; `/tmp/kosta-clang4.bolt` (338 MB) is the artefact all four
+criteria were measured against — keep it only if you want to re-check without
+re-BOLTing (~20 min). On cfarm14: untracked `CMakeFiles/`, `CPackConfig.cmake`,
+`CPackSourceConfig.cmake`, `update-pr-branch.sh` in the build dir.
