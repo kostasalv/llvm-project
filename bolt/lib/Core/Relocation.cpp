@@ -681,13 +681,21 @@ static uint64_t extractValuePPC64(uint32_t Type, uint64_t Contents,
     errs() << object::getELFRelocationTypeName(ELF::EM_PPC64, Type) << '\n';
     llvm_unreachable("unsupported relocation type");
 
+  // Full-width absolute data relocations: the relocated word holds S + A, so
+  // the value can be read straight back out of it. analyzeRelocation() needs
+  // it: a "section symbol + offset" relocation is only converted into a
+  // relocation against the referenced symbol when the extracted value lands
+  // inside the section, and a zero here instead makes it compute an addend of
+  // -SymbolAddress and bind every entry of a data section to the section base.
+  case ELF::R_PPC64_ADDR32:
+  case ELF::R_PPC64_ADDR64:
+    return Contents;
+
   // Data / address / TOC / GOT / TLS classes → return the RELA addend (often 0)
   case ELF::R_PPC64_ADDR16:
   case ELF::R_PPC64_ADDR16_LO:
   case ELF::R_PPC64_ADDR16_HI:
   case ELF::R_PPC64_ADDR16_HA:
-  case ELF::R_PPC64_ADDR32:
-  case ELF::R_PPC64_ADDR64:
   case ELF::R_PPC64_REL64:
   case ELF::R_PPC64_TOC16_DS:
   case ELF::R_PPC64_TOC16_LO_DS:
