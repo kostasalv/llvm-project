@@ -341,13 +341,18 @@ static size_t getSizeForTypePPC64(uint32_t Type) {
   case ELF::R_PPC64_REL16_HA:
     return 2;
   case ELF::R_PPC64_ADDR32:
+  // R_PPC64_REL32 is a word32 field holding S + A - P (ELFv2 ABI, Figure 4-1),
+  // not a doubleword: it is what .eh_frame uses for a DW_EH_PE_pcrel|sdata4
+  // pointer. Reporting 8 here made analyzeRelocation() read four bytes of the
+  // following field into the extracted value, and made
+  // BinarySection::emitAsData() step over those four bytes of real data.
+  case ELF::R_PPC64_REL32:
   case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL14:
   case ELF::R_PPC64_REL14_BRTAKEN:
   case ELF::R_PPC64_REL14_BRNTAKEN:
     return 4;
   case ELF::R_PPC64_ADDR64:
-  case ELF::R_PPC64_REL32:
   case ELF::R_PPC64_REL64:
   case ELF::R_PPC64_TOC:
     return 8;
