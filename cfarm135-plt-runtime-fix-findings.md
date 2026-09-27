@@ -518,7 +518,11 @@ passed / 164 failed on both sides, FAIL lists identical test-for-test. Note for
 whoever runs that gate next: lit's `(N of 472)` suffix is scheduling order and
 must be stripped before diffing, or a clean run looks like 162 regressions.
 
-### 14. Criterion 3 is a separate, still-open bug
+### 14. Criterion 3 while it was still open — superseded by §15
+
+Kept for the record of what was measured and what was ruled out. The conclusion
+here ("the divergence is upstream of GlobalMerge") was right about GlobalMerge
+and wrong about LLVM: the divergence was in the harness. See §15.
 
 `llvm/lib/Target/X86/X86ISelLowering.cpp` compiled with `-resource-dir` pinned
 identically for both binaries:
@@ -541,6 +545,10 @@ merged-global immediates were only where it became visible. Resume from the `-S`
 diff with the pass disabled — see `HANDOFF-ppc64-addr64-rootcause.md`.
 
 This is independent of the `.init_array` corruption: criteria 1, 2 and 4 hold.
+
+Resolved in §15: redoing that `-S` diff with GlobalMerge off cut it from 4723
+lines to 24, all four libstdc++ header paths, and named the cause — the driver's
+own directory determines the GCC prefix.
 
 ## 15. Criterion 3 resolved: it was the test harness, not BOLT
 
