@@ -699,3 +699,41 @@ The BOLT log still carries, all pre-existing and all on the open list:
 * 5690 `internal call detected`, 5619 `unable to disassemble instruction at
   offset`, 299 `failed to patch entries in`, 167 `corrupted control flow
   detected`, 20 `unclaimed data relocation`.
+
+## 18. Criterion 3 widened to 51 translation units: 51/51 identical
+
+One byte-identical object could be one lucky file. `criterion3-wide.sh` re-runs
+the comparison over a sample drawn evenly across the source-size range from
+`compile_commands.json` — 4925 candidate C++ TUs, 51 selected from 400 bytes up
+to the 2.5 MB `X86ISelLowering.cpp` — with `-resource-dir` and
+`--gcc-toolchain=/usr` pinned for both binaries, 8 compiles at a time, each
+object deleted as soon as it compares equal.
+
+```
+  candidate C++ TUs: 4925  (0 KB .. 2.5 MB)
+  selected: 51 TUs
+  [  1/ 51] IDENTICAL       0KB  clang/tools/clang-shlib/clang-shlib.cpp
+  ...
+  [ 49/ 51] IDENTICAL     118KB  clang/lib/Sema/Sema.cpp
+  [ 50/ 51] IDENTICAL     183KB  llvm/lib/Transforms/Vectorize/VPlanRecipes.cpp
+  [ 51/ 51] IDENTICAL    2586KB  llvm/lib/Target/X86/X86ISelLowering.cpp
+  IDENTICAL    51
+  VERDICT=CLEAN  (51/51 identical)
+```
+
+11 minutes wall clock at `JOBS=8`, load average 1.15 before the run, nothing
+left on disk afterwards.
+
+The size spread is deliberate: small TUs exercise the driver, the preprocessor
+and the trivial paths, and large ones are where the optimiser, the register
+allocator and the deep template machinery live. A sample of only large files
+would miss driver-level bugs; a sample of only small ones would miss everything
+that matters. Four orders of magnitude, no differences.
+
+Methodology, including why byte-identity is the right bar and the two flags that
+have to be pinned, is written up separately in `TESTING-BOLTED-CLANG.md`.
+
+**What this still does not cover.** The validated binary had
+`0 out of 159758 functions (0.0%) have non-empty execution profile` — so no
+function reordering, no ext-TSP block layout, no splitting, no ICF ran. This is
+the correctness of BOLT's rewrite path, not of its optimisation passes.
