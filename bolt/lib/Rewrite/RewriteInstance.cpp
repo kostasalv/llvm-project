@@ -3510,11 +3510,47 @@ void RewriteInstance::handleRelativeDynamicRelocation(
     exit(1);
   }
 
-  if (const uint64_t ReferenceOffset = ReferencedAddress - Func->getAddress()) {
-    assert(!BC->getBinaryFunctionContainingAddress(RelOffset) &&
-           "Relative relocation to code only from data");
-    Func->registerInternalRefDataRelocation(ReferenceOffset, RelOffset);
-  }
+  const uint64_t ReferenceOffset = ReferencedAddress - Func->getAddress();
+  if (!ReferenceOffset)
+    return;
+
+  // PPC64 ELFv2: a '.branch_lt' slot holding Func+LocalEntryOffset (typically
+  // Func+8) is the function's ABI local entry point, not a computed-branch
+  // target somewhere in its interior. Registering it as an internal data
+  // reference is wrong on both counts:
+  //
+  //  * validateInternalRefDataRelocations() can only clear offsets covered by a
+  //    recognized jump table, so a local entry is never claimed. It warns
+  //    ("unclaimed data relocation ... remain against function") and returns
+  //    false, which makes postProcessCFG() call setSimple(false) -- silently
+  //    excluding the function from every optimization pass. Measured on a
+  //    `clang` binary: 7067 of its 7902 '.branch_lt' entries point at Func+8,
+  //    de-optimizing 5708 functions. The remaining 835 point at Func+0, and
+  //    every one of the 146133 code references in '.rela.data.rel.ro' (vtables,
+  //    function pointers) targets Func+0 as the ABI requires -- so across that
+  //    whole binary there is not one genuine interior data reference, and the
+  //    warning had a 100% false-positive rate.
+  //
+  //  * the local entry needs none of that bookkeeping to stay correct. The slot
+  //    is deliberately left unpatched: patchELFBranchLT() resolves through
+  //    getNewFunctionAddress(), which matches exact function starts only, so a
+  //    Func+8 entry keeps pointing at the original address -- which stays
+  //    reachable because PatchEntries installs a split global/local entry
+  //    redirect there. References that do resolve symbolically go through
+  //    getNewFunctionOrDataAddress(), which has its own local-entry case.
+  //
+  // This mirrors the IsPPC64LocalEntry handling in handleRelocation(), which
+  // already routes Func+LEP references to a local label rather than a secondary
+  // entry point. getPPC64LocalEntryOffset() is populated from st_other during
+  // the symbol loop in discoverFileObjects(), which completes before
+  // processDynamicRelocations() reaches '.branch_lt', and is 0 for functions
+  // with no local entry -- so this never matches a genuine interior reference.
+  if (BC->isPPC64() && ReferenceOffset == Func->getPPC64LocalEntryOffset())
+    return;
+
+  assert(!BC->getBinaryFunctionContainingAddress(RelOffset) &&
+         "Relative relocation to code only from data");
+  Func->registerInternalRefDataRelocation(ReferenceOffset, RelOffset);
 }
 
 void RewriteInstance::printRelocationInfo(const RelocationRef &Rel,
