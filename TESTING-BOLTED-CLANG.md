@@ -183,10 +183,28 @@ They do **not** establish:
   under test. Criterion 4 tests BOLT, not clang.
 * **That the functions BOLT skipped are fine.** A clang run logs 5619
   undisassemblable instructions, 167 corrupted CFGs, 10332 unanalyzed
-  relocations, 20 unclaimed data relocations and 3 hard errors. Those functions
-  get marked non-simple and left alone. Part of the correctness above is the
-  correctness of *declining to transform* them — safe for now, and a hazard the
-  moment a change makes BOLT act on them.
+  relocations, **5708** unclaimed data relocations and 3 hard errors. Those
+  functions get marked non-simple and left alone. Part of the correctness above
+  is the correctness of *declining to transform* them — safe for now, and a
+  hazard the moment a change makes BOLT act on them.
+
+  An earlier revision of this document said "20" unclaimed data relocations.
+  That number came from `grep -oE "BOLT-WARNING: [a-z ]+"`, whose character class
+  stops at the first digit or capital, so it collapsed thousands of distinct
+  warnings into a handful of prefixes and counted the prefixes. Histogram BOLT
+  warnings by normalising digits (`sed -E 's/[0-9]+/N/g'`) and counting whole
+  lines, never by grepping a fixed alphabetic prefix.
+
+  The real figure mattered: 5708 was not a residue, it was the largest single
+  class of skipped function in the binary, and every one of them was a false
+  positive. A `.branch_lt` slot holding `func+8` — the ELFv2 local entry point —
+  was being filed as a data reference into the function's interior, which no
+  jump table can claim, so the function lost its optimisations. Measured across
+  the whole binary: of 154555 data→code relocations, 7070 land at a non-zero
+  offset, 7067 of them at exactly the local entry, and just 3 anywhere else.
+  Fixed in `bfbaa5f3021c`; that commit makes ~5708 more functions optimisable,
+  which is why it must be re-validated against all four criteria rather than
+  inheriting this result.
 
 ## Re-running
 

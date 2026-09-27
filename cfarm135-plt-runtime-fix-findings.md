@@ -638,6 +638,11 @@ relocations live. The baseline `clang-24` (linked with `--emit-relocs`, as BOLT
 requires) contains 159744 `R_PPC64_REL32` relocations — the fifth most common
 type — and `.rela.eh_frame` accounts for 226031 entries:
 
+Two independent histograms, printed side by side — relocation types on the left,
+containing sections on the right. The columns are **not** pairs: `.rela.branch_lt`
+holds `R_PPC64_RELATIVE` (type 22), confirmed directly with
+`readelf -rW bin/clang-24`, not the `R_PPC64_REL32` that happens to share its row.
+
 ```
 1858839 R_PPC64_REL24        .rela.text            4561096
 1202794 R_PPC64_TOC16_HA     .rela.eh_frame         226031
@@ -698,7 +703,8 @@ The BOLT log still carries, all pre-existing and all on the open list:
 * `Failed to analyze 10332 relocations` (see §16.1).
 * 5690 `internal call detected`, 5619 `unable to disassemble instruction at
   offset`, 299 `failed to patch entries in`, 167 `corrupted control flow
-  detected`, 20 `unclaimed data relocation`.
+  detected`, 5708 `unclaimed data relocation` (§19 — this said 20 until the
+  count was redone; the old figure was a grep artefact).
 
 ## 18. Criterion 3 widened to 51 translation units: 51/51 identical
 
@@ -737,3 +743,243 @@ have to be pinned, is written up separately in `TESTING-BOLTED-CLANG.md`.
 `0 out of 159758 functions (0.0%) have non-empty execution profile` — so no
 function reordering, no ext-TSP block layout, no splitting, no ICF ran. This is
 the correctness of BOLT's rewrite path, not of its optimisation passes.
+
+## 19. The 5708 "unclaimed data relocation" warnings: the ELFv2 local entry point
+
+### 19.1 The count was wrong first, and the wrong count hid the problem
+
+This class was carried on the open list as "20 unclaimed data relocations" for
+several sections of this document. That number came from histogramming the log
+with `grep -oE "BOLT-WARNING: [a-z ]+"`. The character class stops at the first
+digit or capital letter, so thousands of distinct warnings collapsed into a
+handful of alphabetic prefixes and what got counted was the prefixes. The real
+count is **5708**, and it is the largest single class of skipped function in the
+binary — not a residue worth deferring.
+
+Histogram BOLT warnings by normalising digits out of the whole line:
+
+```bash
+grep -oE "BOLT-WARNING: .*" log | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn
+```
+
+Never by grepping a fixed alphabetic prefix. This is the third time in this port
+that a crude local extraction produced a confidently-reported wrong number (after
+this one: the `.group 000008 -> 00000c` non-difference). Extraction output needs
+a sanity check before it is quoted.
+
+### 19.2 The failure chain
+
+```
+readBranchLTRelocations()                     RewriteInstance.cpp:3110
+  -> handleRelativeDynamicRelocation()                          :3229
+       ReferenceOffset = ReferencedAddress - Func->getAddress()   // == 8
+       -> registerInternalRefDataRelocation()                    :3246
+            -> validateInternalRefDataRelocations()   // can only clear offsets
+                                                     // covered by a recognised
+                                                     // jump table -> warns,
+                                                     // returns false
+                 -> postProcessCFG() -> setSimple(false)
+```
+
+`.branch_lt` is the linker's branch lookup table: 8-byte absolute function
+addresses used by `.plt_branch.`/`.plt_call.` trampolines for calls beyond the
+26-bit ±32 MB `bl` range. A slot may hold either of a function's two ELFv2 entry
+points — `Func+0`, the global entry whose 2-instruction preamble recomputes r2
+from r12, or `Func+LocalEntryOffset` (conventionally `Func+8`), used when the
+caller already holds the right TOC base. The second kind was being read as "data
+references the interior of this function at an offset I cannot explain", which is
+BOLT's signal for a computed branch whose jump table it does not control.
+
+`setSimple(false)` is a conservative bail-out, not a corruption: the function
+stays correct. The cost is that it is excluded from every optimisation pass. So
+this was never a silent-wrong-data hazard — it was ~5708 functions silently
+opted out of the thing BOLT exists to do.
+
+### 19.3 Measured, not argued: every data→code relocation in the binary
+
+`registerInternalRefDataRelocation()` has two call sites, and the first probe
+only covered one of them. Site `:3246` is reached only from
+`readBranchLTRelocations` (R_PPC64_RELATIVE only). Site `:3637` is reached from
+`processRelocations()`, which skips allocatable sections (`:3038`) — but this
+clang is linked `--emit-relocs`, so `.rela.data.rel.ro` (146133 code refs),
+`.rela.data`, `.rela.init_array` and friends are non-allocatable and *are*
+iterated. A third probe (`probe-datarefs.sh`) therefore histogrammed the
+offset-into-containing-function of **every** relocation in **every** data
+section:
+
+```
+  section                         total    off=0    off=8    other  funcs w/ off!=0
+  .rela.branch_lt                  7902      835     7067        0  7062
+  .rela.data                          8        8        0        0  0
+  .rela.data.rel.ro              146133   146133        0        0  0
+  .rela.gnu.build.attributes         21       18        0        3  3
+  .rela.got                           3        3        0        0  0
+  .rela.init_array                  485      485        0        0  0
+  .rela.rodata                        3        3        0        0  0
+
+  relocations at a NON-ZERO offset into a function: 7070
+  of those, at an offset OTHER than 8:              3
+  distinct functions with a non-zero-offset data ref: 7063
+```
+
+So: 154555 data→code relocations, 7070 at a non-zero offset, **7067 of them at
+exactly the local entry**, and 3 anywhere else. Every one of the 146133
+`.data.rel.ro` code references — vtables, function pointers — targets `Func+0`,
+as the ABI requires. Across the whole binary there is not one genuine interior
+data reference. The warning had a ~100% false-positive rate.
+
+The 7063→5708 gap is functions BOLT never reaches validation for: already
+ignored, already non-simple, or failed disassembly.
+
+### 19.4 Why the local entry needs no bookkeeping to stay correct
+
+Established by reading the code, not inferred. `patchELFBranchLT()` resolves
+through `getNewFunctionAddress()` → `getBinaryFunctionAtAddress()`, which matches
+**exact function starts only**. A `Func+8` slot therefore returns 0 and is
+deliberately left pointing at the original address — which stays reachable
+because `PatchEntries` installs a split global/local entry redirect there
+(`PatchEntries.cpp:179-193`). References that do resolve symbolically go through
+`getNewFunctionOrDataAddress()`, which has its own local-entry case at
+`:6811-6814` returning `OutputAddress + getPPC64LocalEntryOffset()`.
+
+Three sites already special-cased `Func+LEP` before this fix — `handleRelocation`'s
+`IsPPC64LocalEntry` branch (`:3619-3628`), that `PatchEntries` redirect, and
+`getNewFunctionOrDataAddress`. `handleRelativeDynamicRelocation` was the fourth
+and last, and did not. The comment on `getNewFunctionOrDataAddress` even asserts
+the local entry "is never registered as a BB start or an internal-reference
+offset" — which is exactly what `:3246` was violating.
+
+Phase ordering holds: the symbol loop that decodes `PPC64LocalEntryOffset` from
+`st_other` (`:1385-1393`) closes at `:1417`, and `processDynamicRelocations()` is
+called at `:1422`. The offset is fully populated before `.branch_lt` is read, and
+is 0 for functions with no local entry, so the guard can never match a genuine
+interior reference.
+
+### 19.5 The fix, and why it needs full re-validation
+
+`bfbaa5f3021c`, in `handleRelativeDynamicRelocation`:
+
+```cpp
+if (BC->isPPC64() && ReferenceOffset == Func->getPPC64LocalEntryOffset())
+  return;
+```
+
+Plus `bolt/test/PPC64/branch-lt-local-entry.s`, which hand-builds both slot
+kinds — including raw `Elf64_Rela` bytes in `.rela.branch_lt`, because that is
+exactly how `readBranchLTRelocations()` reads it — calls through both slots, and
+checks `CHECK-NOT: unclaimed data relocation`.
+
+This removes a false de-optimisation, so ~5708 more functions now go through
+BOLT's optimisation passes. That is a real behaviour change on code BOLT
+previously left alone, which makes criterion 3 (byte-identical objects) the
+load-bearing check for this commit, not a formality. The result in §18 must not
+be inherited across it.
+
+It also touches `bolt/lib/Rewrite/RewriteInstance.cpp`, outside
+`bolt/lib/Target/PowerPC/`, so AGENTS.md requires the cfarm14 x86_64 + AArch64
+two-point FAIL-list gate before it goes anywhere.
+
+### 19.6 Two smaller things this probe turned up
+
+* **3 relocations in `.rela.gnu.build.attributes` target `Func+4`** —
+  `__libc_csu_init`, `stat`, `lstat`, statically linked glibc pieces referenced
+  from GNU build-attribute notes. These reach site `:3637` and are genuinely
+  unclaimable. Candidate fix: skip `.rela.gnu.build.attributes` in
+  `readRelocations()` the way `.eh_frame` and `.gcc_except_table` already are —
+  build-attribute notes are metadata and never need relocating.
+* **`BinaryEmitter.cpp:386-398` re-encodes `st_other` as
+  `getPPC64LocalEntryOffset() ? 3u : 0u`** — i.e. always "8" for any non-zero
+  LEP — while `getNewFunctionOrDataAddress()` uses the true recorded byte offset.
+  Latent only, and measured so: this binary has 27206 symbols with LEP=0 and
+  230866 with LEP=8, and **zero** with any other value. Wrong the moment a
+  function has LEP=16.
+
+### 19.7 Validation of the fix, and the test that nearly proved nothing
+
+**The four criteria, re-run at `bfbaa5f3021c` rather than inherited:**
+
+| | result |
+|---|---|
+| unclaimed data relocations | **5708 → 0** |
+| 1. five clean starts | 5/5 `rc=0` |
+| 2. REL24 clobber pattern | 0 base, 0 bolt (unchanged) |
+| 3. byte-identical objects | **52/52 identical**, 0 KB … 2.5 MB |
+| 4. `check-bolt` PPC64 lit | 11/11 after the test was corrected |
+| `BOLT-ERROR` / assertions | 3 / 0 — unchanged |
+
+**The fix demonstrably changed what BOLT optimises**, which is the point of
+measuring pass statistics rather than just the warning count:
+
+| BOLT-INFO | before | after |
+|---|---|---|
+| UCE removed | 209287 blocks, 837148 bytes | **221485 blocks, 885940 bytes** |
+| merged duplicate CFG edges | 1689 | **1810** |
+| inserted stubs | 58448, shared 810584× | **60302, shared 852318×** |
+| `_end` | `0x2109ee64` | `0x214b2564` |
+| Failed to analyze relocations | 10332 | 10332 (unchanged) |
+| corrupted control flow | 167 | 167 (unchanged) |
+
++12198 blocks eliminated and +1854 stubs is thousands of functions entering the
+optimisation pipeline for the first time — and 52/52 byte-identical objects
+across four orders of magnitude of TU size says the code they now produce is
+still correct. Had the warning count dropped with these numbers unchanged, the
+fix would have silenced a message without fixing anything.
+
+`internal call detected` rose 5690 → 5863. Expected direction: those are reported
+per analysed function, and there are now more of them.
+
+**x86_64 + AArch64 gate** (required: `RewriteInstance.cpp` is outside
+`bolt/lib/Target/PowerPC/`). `5473a91b5132` vs `bfbaa5f3021c` — the three commits
+in between are documentation only, so this two-point run isolates exactly this
+change. `BASE_FAILS=166 NEW_FAILS=164`, and the diff is deletions only:
+
+```
+165,166d164
+< TIMEOUT: BOLT :: AArch64/compare-and-branch-split-functions.S
+< TIMEOUT: BOLT :: AArch64/compare-and-branch-unsupported.S
+```
+
+Two load-dependent timeouts present at BASE and absent at NEW. Nothing newly
+fails, which is what the gate asks.
+
+#### The test was wrong twice, in opposite directions
+
+First it **failed**, and the fix was not at fault. With `--emit-relocs` on the
+link, `ld.lld` generates its *own* `SHT_RELA` section also named
+`.rela.branch_lt` — holding `R_PPC64_ADDR64`, not `R_PPC64_RELATIVE` — for the
+`.branch_lt` data, plus a `.rela.rela.branch_lt` for the hand-built section
+itself:
+
+```
+  [ 1] .rela.branch_lt   PROGBITS  00000000100001c8  ...  A    <- hand-built
+  [ 7] .rela.branch_lt   RELA      0000000000000000  ...  I 10 5   <- ld.lld's
+  [ 8] .rela.rela.branch_lt RELA   0000000000000000  ...  I 10 1
+```
+
+Two sections with one name. BOLT's by-name lookup took the wrong one and aborted
+in `ExecutableFileMemoryManager::updateSection` on `"Original section must exist
+and be allocatable"`, and the warnings that appeared were `RType:26`
+(`R_PPC64_ADDR64`) arriving at the *other* call site — never the guard. Dropping
+`--emit-relocs` leaves exactly one `.rela.branch_lt` and the test passes.
+
+Then it passed, and BOLT reported `relocation mode: 0` for that input — so a
+green result was ambiguous: guard fired, or path never reached? A test that
+cannot fail is worse than no test, so this was settled by building `llvm-bolt` at
+`5473a91b5132` and running the identical inputs through both:
+
+| llvm-bolt | slot | `unclaimed data relocation` |
+|---|---|---|
+| pre-fix `5473a91b5132` | `has_lep+8` | 1 |
+| pre-fix | `has_lep+4` | 1 |
+| fixed `bfbaa5f3021c` | `has_lep+8` | **0** |
+| fixed | `has_lep+4` | **1** |
+
+The path runs with or without relocation mode; the guard skips exactly
+`getPPC64LocalEntryOffset()` and nothing adjacent. The `has_lep+4` case is now
+committed as a positive control in the same test file, reassembled via
+`--defsym CONTROL=1`, asserting the warning is *still* produced — so the test
+cannot quietly go vacuous if this code moves.
+
+Generalised: a passing negative-only test on a path you have not proved is
+reachable is not evidence. Either show the test failing without the fix, or pair
+it with a positive control.
