@@ -983,3 +983,184 @@ cannot quietly go vacuous if this code moves.
 Generalised: a passing negative-only test on a path you have not proved is
 reachable is not evidence. Either show the test failing without the fix, or pair
 it with a positive control.
+
+## 20. The llc layout retest: block reordering works, function reordering does not
+
+Re-run on cfarm135 at `792372f4dca4`, against `llc` (167,150,728 bytes, 79,199
+functions). Corpus: `llvm/test/CodeGen/PowerPC/*.ll`, deterministically shuffled
+with `shuf --random-source=<(yes 42)` and split 200 training / 80 held-out, zero
+overlap by `comm -12`.
+
+The profiling pipeline works at this scale. `perf record -e cycles:u -j any,u`
+over 200 files x 25 repetitions captured 611,739 branch-stack samples into an
+86,692,852-byte `perf.data`; `perf2bolt` converted it (rc=0) into a 22,282,131-byte
+`llc.fdata` giving 9035/79199 functions (11.4%) a profile.
+
+Five cumulative configurations, same binary, same profile, all with
+`-thread-count=16`:
+
+| Config | Flags added | Stubs hot/cold | Result |
+|---|---|---|---|
+| A | `-reorder-blocks=ext-tsp` | 33,734 / 0 | **rc=0**, 80/80 held-out files byte-identical |
+| B | `+ -reorder-functions=cdsort` | 33,953 / 0 | rc=1, out of range, no binary |
+| C | `+ -split-functions -split-all-cold` | 48,081 / 10,232 | rc=1, out of range, no binary |
+| D | `+ -icf=1` | 47,963 / 10,225 | rc=1, out of range, no binary |
+| E | `-reorder-blocks=ext-tsp -reorder-functions=hfsort` | 33,798 / 0 | rc=1, out of range, no binary |
+
+In September every `-reorder-blocks=` algorithm produced an `llc` that crashed or
+hung on a one-line `.ll`. Configuration A now produces one that runs and is
+byte-exact on 80 of 80 held-out files. The boundary has moved to function
+reordering.
+
+Configuration E is the control that matters: `hfsort` is a different algorithm
+producing a different layout, and it fails the same way at a comparable distance.
+**The trigger is moving functions at all, not any one ordering pass**, so the
+remedy belongs in stub insertion, not in a reordering pass.
+
+Corrected distances (the printed fixup address is wrong -- see section 21):
+
+| Config | target | real fixup address | distance | over +/-32 MiB by |
+|---|---|---|---|---|
+| B | `0x184d9208` | `0x160082b0` | 36.82 MiB | 4.82 MiB |
+| C | `0x1851b5b8` | `0x160dd6f0` | 36.24 MiB | 4.24 MiB |
+| D | `0x18464478` | `0x160db0d4` | 35.54 MiB | 3.54 MiB |
+| E | `0x184d77c8` | `0x16025950` | 36.70 MiB | 4.70 MiB |
+
+Every overshoot lands in 3.5-4.8 MiB. These are calls that just barely failed to
+reach, which is the case a relaxation pass handles.
+
+Two leads. The target is an `<anonymous symbol>` -- a block with no name, which
+stub insertion may simply not see. And the addend is enormous in both
+configurations that print one: B is `0x1656b440 + 0x1f6ddc8`, E is
+`0x1655e300 + 0x1f794c8`; both addends are ~32.9 MB and the two bases are 53 KB
+apart under unrelated ordering algorithms, which suggests the same unnamed block
+reached two ways.
+
+Note on machine courtesy: the first matrix run drove the 1-minute load average to
+44.76, because `llvm-bolt` defaults `-thread-count` to hardware concurrency and
+cfarm135 has 128 CPUs. Re-running configuration D under `-thread-count=16`
+reproduced the identical failing address, so the cap changes only how long BOLT
+takes, not what it emits.
+
+## 21. The out-of-range diagnostic prints the target address twice
+
+The failure above reports the relocation target and the fixup address as the same
+value, which cannot be right -- a call to itself has distance zero.
+
+`llvm/lib/ExecutionEngine/JITLink/JITLink.cpp` prints
+`E.getTarget().getAddress()` where it claims to print the fixup address. The code
+before `0c33799e374a` ("[JITLink] Include target addend in out-of-range error
+(#145423)", 2025-06-23) printed `B.getFixupAddress(E)`, so this is a regression.
+
+It cost real time here: the first reading of the message implied distance zero,
+the second implied 31.4 MiB, which is *inside* the limit and would have meant a
+broken range check. Neither was true.
+
+No test caught it because all four existing tests stop checking at the word
+`fixup`:
+
+```text
+# CHECK-ERROR: relocation target {{.*}} (X) is out of range of Pointer8 fixup
+```
+
+The fix is one line, plus a test that binds the printed fixup address and requires
+it to reappear as the block address in the parenthetical. This touches `llvm/`,
+not `bolt/lib/Target/PowerPC/`, so per `AGENTS.md` it needs the x86_64 and AArch64
+gate on cfarm14, and it should go upstream as its own patch -- it is useful to
+anyone debugging out-of-range relocations on any target.
+
+## 22. The stub tax is the plain rewrite, not the layout passes
+
+The natural assumption about the PPC64 slowdown is that it comes from BOLT moving
+code around and lengthening call distances. Measured, that is wrong.
+
+A control run with no profile and no layout passes at all --
+`llvm-bolt llc -o llc.plain -thread-count=16` -- completed rc=0 in 364 s,
+produced 180,213,024 bytes, inserted 33,668 hot stubs shared 428,391 times over
+2 iterations, emitted only the 2 known FDE-size `BOLT-ERROR`s and zero
+assertions, and compiled all 80 held-out files byte-identically to baseline.
+
+`perf stat -r 5 -e cycles:u,instructions:u`, compiling the 10 largest held-out
+files:
+
+| | cycles | instructions | elapsed | IPC |
+|---|---|---|---|---|
+| baseline | 1,387,148,963 (+/-0.40%) | 679,415,077 (+/-0.01%) | 0.47158 s | 0.49 |
+| `llc.plain` | 1,932,358,546 (+/-0.30%) | 772,585,461 (+/-0.01%) | 0.65259 s | 0.40 |
+| change | **+39.3%** | **+13.7%** | **+38.4%** | worse |
+
+Against configuration A (profile + block reordering): +38.5% cycles, +14.4%
+instructions. So of the 14.4 points of extra instructions, **13.7 are already
+present before any optimisation pass runs.** Layout contributes ~0.7 points, and
+the stub counts say why: 33,668 versus 33,734, a difference of 0.2%. The number of
+stubs is decided by the rewrite, not by layout.
+
+Also worth recording: BOLT's dyno-stats claimed an instruction *reduction* for
+both llc and clang. It excludes stub cost, so it points the wrong way. Treat it as
+"what layout would save if calls were free", not as a prediction.
+
+### The mechanism is already in our own code
+
+Two PPC64 rules in `bolt/lib/Passes/LongJmp.cpp` together produce exactly this,
+and both are currently unconditional.
+
+`createNewStub` selects the stub form with no distance test at all:
+
+```cpp
+bool UseLongJmp = BC.isPPC64() && (TgtIsFunc || IsCall);
+```
+
+Every stub for a call target is therefore the full 7-instruction indirect
+sequence (`lis/ori/rldicr/oris/ori r12, mtctr, bctr`) -- 28 bytes and 7
+instructions where a reachable target needs 4 bytes and 1. `StubBits` is then set
+to 64, which makes `relaxStub()` return early, so a stub that turns out to be in
+range is never shortened.
+
+`needsStub` returns true *before* any range arithmetic for calls whose target
+name contains `.plt_call.`/`.plt_branch.` and for calls to any ignored function,
+and subtracts a further 1 MB safety margin from the +/-32 MiB budget for all
+calls.
+
+So a large share of the 428,391 stub-routed call sites are likely not distant
+calls; they are categorically stubbed, given the most expensive stub form, with
+relaxation disabled. Seven instructions instead of one on hot paths is the right
+order of magnitude for +13.7%.
+
+### Sections 20 and 22 are the same bug
+
+The comment justifying the unconditional long jump says why it exists:
+
+> A single `b target` (26-bit +/-32MB) stub created in the final LongJmpPass
+> iteration has BBAddresses set to the hot SOURCE address (stale), so relaxStub()
+> sees it as within range and skips long-jump conversion. At JITLink time the
+> CallBranchDelta fixup finds the true 34MB displacement and rejects it with
+> "out of range".
+
+The same staleness is noted again around `LongJmp.cpp:1257`. The 28-byte
+always-stub is a workaround for addresses the relaxation loop cannot trust -- and
+it costs 13.7% **and still does not prevent the failure in section 20**, because
+function reordering produces a call that misses the stub path entirely.
+
+That sets the order of work. Making the addresses read by `needsStub()` and
+`relaxStub()` accurate in the final iteration is the prerequisite; porting the
+AArch64 call relaxation pass (#173952, `--relax-exp`) on top of stale addresses
+would likely reproduce the same class of bug. The cheap confirming measurement,
+which needs no build, is to bucket the 33,668 stubs under `-debug-only=longjmp`
+into: forced by the PLT rule, forced by the ignored-function rule, forced by the
+1 MB margin, and genuinely beyond +/-32 MiB. If the last bucket is a small
+minority -- and the plain rewrite does not move functions relative to one another
+at all -- the tax is self-inflicted and recoverable.
+
+### A harness lesson, again
+
+The first byte-compare of `llc.plain` reported `identical: 0, differ: 80`. Before
+reporting that, one file was diffed by hand: `diff` said
+`base/addc.s: No such file or directory`. The baseline files are named
+`addc.ll.s` -- the baseline loop used `basename "$f"` and kept the `.ll`, the new
+script used `basename "$f" .ll` and dropped it. Every `cmp` compared against a
+file that did not exist and therefore reported a difference. The BOLT run was
+fine; the check was broken.
+
+Same shape as the `/dev/null` near-miss in section 15 and the vacuous-test problem
+in section 19. When a result is uniformly catastrophic -- 0 of 80 rather than 3 of
+80 -- suspect the harness before the code.
