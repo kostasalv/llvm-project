@@ -39,9 +39,17 @@
 ## reads it: object::SectionRef::relocations() does not associate
 ## '.rela.branch_lt' with '.branch_lt' on the toolchain that produces it, so
 ## BOLT parses the bytes directly.
+##
+## Do NOT add --emit-relocs to the link. With it, ld.lld generates its own
+## SHT_RELA section also named '.rela.branch_lt' (holding R_PPC64_ADDR64, not
+## R_PPC64_RELATIVE) for the '.branch_lt' data below, plus a
+## '.rela.rela.branch_lt' for the hand-built section itself. Two sections then
+## share one name, BOLT's by-name lookup picks the wrong one, and it aborts in
+## ExecutableFileMemoryManager::updateSection on "Original section must exist and
+## be allocatable".
 # REQUIRES: system-linux
 # RUN: llvm-mc -filetype=obj -triple powerpc64le-unknown-linux-gnu %s -o %t.o
-# RUN: ld.lld %t.o -o %t.exe -e _start --emit-relocs
+# RUN: ld.lld %t.o -o %t.exe -e _start
 # RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s
 
 # CHECK: BOLT-INFO: Target architecture: powerpc64le
@@ -52,6 +60,28 @@
 
 ## The rewritten binary still runs: both slots reach the right function.
 # RUN: %t.bolt
+
+## Positive control. Without it a green result here would be ambiguous: it could
+## mean the guard worked, or it could mean readBranchLTRelocations() was never
+## reached and the test proves nothing. Reassemble with the second slot at
+## has_lep+4 -- a genuine interior offset that is NOT the local entry -- and the
+## warning must come back. That pins down both halves of the claim: the path is
+## live, and the guard matches only getPPC64LocalEntryOffset().
+##
+## Measured while writing this test, with llvm-bolt built at 5473a91b5132 (the
+## commit before the fix) and at the fix:
+##
+##   binary    slot       "unclaimed data relocation"
+##   pre-fix   has_lep+8  1
+##   pre-fix   has_lep+4  1
+##   fixed     has_lep+8  0      <- CHECK-NOT above
+##   fixed     has_lep+4  1      <- CTL-WARN below
+# RUN: llvm-mc -filetype=obj -triple powerpc64le-unknown-linux-gnu \
+# RUN:   --defsym CONTROL=1 %s -o %t.ctl.o
+# RUN: ld.lld %t.ctl.o -o %t.ctl.exe -e _start
+# RUN: llvm-bolt %t.ctl.exe -o %t.ctl.bolt 2>&1 | FileCheck --check-prefix=CTL %s
+
+# CTL: unclaimed data relocation
 
         .text
         .abiversion 2
@@ -103,7 +133,11 @@ _start:
         .align 3
 branch_lt:
         .quad   has_lep                         # global entry
+.ifdef CONTROL
+        .quad   has_lep+4                       # interior, and NOT the local entry
+.else
         .quad   has_lep+8                       # local entry -- the case at issue
+.endif
 
 ## Hand-built Elf64_Rela entries: { r_offset, r_info, r_addend }, 24 bytes each.
 ## r_info's low 32 bits are the type; R_PPC64_RELATIVE is 22 and carries no
@@ -115,4 +149,8 @@ branch_lt:
         .quad   has_lep                         # r_addend: Func+0
         .quad   branch_lt+8                     # r_offset: slot 1
         .quad   22                              # R_PPC64_RELATIVE
+.ifdef CONTROL
+        .quad   has_lep+4                       # r_addend: genuine interior ref
+.else
         .quad   has_lep+8                       # r_addend: Func+LEP
+.endif
