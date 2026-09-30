@@ -965,7 +965,10 @@ bool PPCMCPlusBuilder::isUnconditionalBranch(const MCInst &I) const {
   }
 }
 
-bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I) const {
+// MustPreserveFlags is unnamed: this override returns false for every PPC64
+// conditional branch, so there is no case where the flag could change the
+// answer. It is kept in the signature to match MCPlusBuilder's virtual.
+bool PPCMCPlusBuilder::isReversibleBranch(const MCInst &I, bool) const {
   // NOTE: no PPC64 conditional branch is actually reversible today -- see
   // the "default:" case below. BC/BCC/gBC (and their linked forms) encode
   // the branch condition in a BO/CR-bit style operand that COULD in

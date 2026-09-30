@@ -6703,7 +6703,14 @@ RewriteInstance::patchELFAllocatableRelaSections(ELFObjectFile<ELFT> *File) {
     }
 
     if (Offset > EndOffset || EndOffset - Offset < sizeof(NewRelA)) {
-      BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation\n";
+      // Report what did not fit where: an undersized .rela.dyn/.rela.plt is
+      // otherwise indistinguishable from a bad offset computation.
+      BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation"
+                 << " (Offset=0x" << Twine::utohexstr(Offset)
+                 << ", EndOffset=0x" << Twine::utohexstr(EndOffset)
+                 << ", need=" << sizeof(NewRelA)
+                 << ", avail=" << (Offset <= EndOffset ? EndOffset - Offset : 0)
+                 << ")\n";
       exit(1);
     }
 
@@ -6723,47 +6730,8 @@ RewriteInstance::patchELFAllocatableRelaSections(ELFObjectFile<ELFT> *File) {
         if (IsRelative)
           ++DynamicRelativeRelocationsCount;
 
-        Elf_Rela NewRelA;
-        MCSymbol *Symbol = Rel.Symbol;
-        uint32_t SymbolIdx = 0;
-        uint64_t Addend = Rel.Addend;
-        uint64_t RelOffset =
-            getNewFunctionOrDataAddress(SectionInputAddress + Rel.Offset);
-
-        RelOffset = RelOffset == 0 ? SectionAddress + Rel.Offset : RelOffset;
-        if (Rel.Symbol) {
-          SymbolIdx = getOutputDynamicSymbolIndex(Symbol);
-        } else {
-          // Usually this case is used for R_*_(I)RELATIVE relocations
-          const uint64_t Address = getNewFunctionOrDataAddress(Addend);
-          if (Address)
-            Addend = Address;
-        }
-
-        NewRelA.setSymbolAndType(SymbolIdx, Rel.Type, EF.isMips64EL());
-        NewRelA.r_offset = RelOffset;
-        NewRelA.r_addend = Addend;
-
-        const bool IsJmpRel = IsJmpRelocation.contains(Rel.Type);
-        uint64_t &Offset = IsJmpRel ? RelPltOffset : RelDynOffset;
-        const uint64_t &EndOffset =
-            IsJmpRel ? RelPltEndOffset : RelDynEndOffset;
-        if (!Offset || !EndOffset) {
-          BC->errs() << "BOLT-ERROR: Invalid offsets for dynamic relocation\n";
-          exit(1);
-        }
-
-        if (Offset + sizeof(NewRelA) > EndOffset) {
-          BC->errs() << "BOLT-ERROR: Offset overflow for dynamic relocation "
-                        "(IsJmpRel="
-                     << IsJmpRel << ", Offset=0x" << Twine::utohexstr(Offset)
-                     << ", EndOffset=0x" << Twine::utohexstr(EndOffset)
-                     << ", overflow bytes="
-                     << (Offset + sizeof(NewRelA) - EndOffset) << ")\n";
-          exit(1);
-        }
-
-        writeRela(&NewRelA, Offset);
+        writeRelocation(Section, Rel, RelDynOffset, RelDynEndOffset);
+        RelDynOffset += sizeof(Elf_Rela);
       }
     }
   };
@@ -6881,9 +6849,9 @@ void RewriteInstance::patchELFBranchLT(ELFObjectFile<ELFT> *File) {
       LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching .branch_lt entry 0x"
                         << Twine::utohexstr(*Entry) << " with 0x"
                         << Twine::utohexstr(NewAddress) << '\n');
-      OS.pwrite(reinterpret_cast<const char *>(&NewAddress), sizeof(NewAddress),
-                reinterpret_cast<const char *>(Entry) -
-                    File->getData().data());
+      safePWrite(
+          OS, reinterpret_cast<const char *>(&NewAddress), sizeof(NewAddress),
+          reinterpret_cast<const char *>(Entry) - File->getData().data());
     }
   }
 }
@@ -6941,13 +6909,10 @@ void RewriteInstance::patchELFFuncArraysPPC64(ELFObjectFile<ELFT> *File) {
 
       uint64_t FileOffset =
           reinterpret_cast<const char *>(Contents.data() + Offset) - Data;
-      if (IsLE) {
-        uint64_t LE = support::endian::byte_swap<uint64_t, llvm::endianness::little>(NewGEP);
-        OS.pwrite(reinterpret_cast<const char *>(&LE), EntrySize, FileOffset);
-      } else {
-        uint64_t BE = support::endian::byte_swap<uint64_t, llvm::endianness::big>(NewGEP);
-        OS.pwrite(reinterpret_cast<const char *>(&BE), EntrySize, FileOffset);
-      }
+      const uint64_t Patched = support::endian::byte_swap(
+          NewGEP, IsLE ? llvm::endianness::little : llvm::endianness::big);
+      safePWrite(OS, reinterpret_cast<const char *>(&Patched), EntrySize,
+                 FileOffset);
     }
   }
 }

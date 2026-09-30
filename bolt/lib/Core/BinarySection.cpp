@@ -216,8 +216,8 @@ void BinarySection::flushPendingRelocations(raw_fd_ostream &OS,
       Value = (OldBits & ~Mask) | (Value & Mask);
     }
 
-    OS.pwrite(reinterpret_cast<const char *>(&Value), RelocSize,
-              SectionFileOffset + Reloc.Offset);
+    safePWrite(OS, reinterpret_cast<const char *>(&Value), RelocSize,
+               SectionFileOffset + Reloc.Offset);
 
     LLVM_DEBUG(
         dbgs() << "BOLT-DEBUG: writing value 0x" << Twine::utohexstr(Value)
