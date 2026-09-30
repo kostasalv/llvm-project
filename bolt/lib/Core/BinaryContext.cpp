@@ -213,6 +213,9 @@ Expected<std::unique_ptr<BinaryContext>> BinaryContext::createBinaryContext(
     ArchName = TheTriple.getArchName();
     if (!Features)
       return createFatalBOLTError("RISCV target needs SubtargetFeatures");
+    // We rely on relaxation for some transformations (e.g., promoting all calls
+    // to PseudoCALL and then making JITLink relax them). Since the relax
+    // feature is not stored in the object file, we manually enable it.
     Features->AddFeature("relax");
     FeaturesStr = Features->getString();
     break;
