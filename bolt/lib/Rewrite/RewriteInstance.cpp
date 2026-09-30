@@ -3764,25 +3764,14 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
       Expected<StringRef> SectionName = SectionIt->getName();
       if (SectionName && !SectionName->empty())
         ReferencedSection = BC->getUniqueSectionByName(*SectionName);
-    } else if (BC->isRISCV() && ReferencedSymbol && ContainingBF) {
-      uint32_t SymFlags = 0;
-      if (IsPPC64) {
-        auto FOrErr = Symbol.getFlags();
-        if (!FOrErr) {
-          consumeError(FOrErr.takeError());
-          SymFlags = 0;
-        } else {
-          SymFlags = *FOrErr;
-        }
-      } else {
-        SymFlags = cantFail(Symbol.getFlags());
-      }
-      if (SymFlags & SymbolRef::SF_Absolute) {
-        ContainingBF->addRelocation(Rel.getOffset(), ReferencedSymbol,
-                                    Relocation::getType(Rel), 0,
-                                    cantFail(Symbol.getValue()));
-        return;
-      }
+    } else if (BC->isRISCV() && ReferencedSymbol && ContainingBF &&
+               (cantFail(Symbol.getFlags()) & SymbolRef::SF_Absolute)) {
+      // This might be a relocation for an ABS symbols like __global_pointer$ on
+      // RISC-V
+      ContainingBF->addRelocation(Rel.getOffset(), ReferencedSymbol,
+                                  Relocation::getType(Rel), 0,
+                                  cantFail(Symbol.getValue()));
+      return;
     }
   }
 
