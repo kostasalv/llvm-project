@@ -4633,11 +4633,25 @@ void RewriteInstance::postProcessFunctions() {
     // and produce 'branch target out of range' assembler errors.  Mark
     // non-simple PPC64 functions as ignored so they are emitted at their
     // original addresses and their encoded displacements remain correct.
-    if (BC->isPPC64() && !Function.isSimple() && !Function.isIgnored())
-      Function.setIgnored();
+    //
+    // The decision is taken here but ACTED ON below, after the CFG has been
+    // post-processed and dumped. setIgnored() calls resetState(), which
+    // releases the CFG and empties BasicBlocks, so ignoring the function at
+    // this point makes it empty() and silently skips both postProcessCFG()
+    // and the --print-cfg dump. bolt/test/indirect-goto-relocs.test caught
+    // that: a computed goto makes main non-simple on PPC64 (BOLT does not
+    // recognise GCC's PIC switch table, so postProcessIndirectBranches()
+    // rejects the indirect branch), main was ignored before anything could
+    // print it, and the test's CHECK lines matched nothing while llvm-bolt
+    // still exited 0 with no warning.
+    const bool IgnoreAsNonSimplePPC64 =
+        BC->isPPC64() && !Function.isSimple() && !Function.isIgnored();
 
-    if (Function.empty())
+    if (Function.empty()) {
+      if (IgnoreAsNonSimplePPC64)
+        Function.setIgnored();
       continue;
+    }
 
     Function.postProcessCFG();
 
@@ -4646,6 +4660,16 @@ void RewriteInstance::postProcessFunctions() {
 
     if (opts::shouldDumpDot(Function))
       Function.dumpGraphForPass("00_build-cfg");
+
+    // Now ignore it. postProcessCFG() gates all of its mutations on
+    // isSimple(), so running it first on a function that is about to be
+    // ignored changes nothing that survives resetState(). The continue keeps
+    // the score accounting below identical to ignoring the function earlier:
+    // it used to be skipped because setIgnored() had made the function empty.
+    if (IgnoreAsNonSimplePPC64) {
+      Function.setIgnored();
+      continue;
+    }
 
     if (opts::PrintLoopInfo) {
       Function.calculateLoopInfo();
