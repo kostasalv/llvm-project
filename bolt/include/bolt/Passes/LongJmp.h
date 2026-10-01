@@ -75,14 +75,18 @@ class LongJmpPass : public BinaryFunctionPass {
   /// principle be producing stubs for targets that were comfortably in range.
   /// Whether they are is a measurement nobody has taken.
   ///
-  /// These are reset at the top of every iteration of the relaxation fixpoint,
-  /// so the values that get printed are from the LAST iteration only. That
-  /// matters: the two forced rules fire on every iteration unconditionally
-  /// while the distance-based ones can flip, so running totals would inflate
-  /// precisely the buckets one would hope to see dominate. In the final
-  /// iteration no stub is created -- that is what ends the loop -- so every
-  /// call site is evaluated exactly once and the four buckets partition the
-  /// sites that genuinely need a stub.
+  /// These are RUNNING TOTALS across the whole relaxation fixpoint, and the
+  /// per-iteration figures are printed as deltas at the end of each iteration.
+  /// An earlier version of this reset them at the top of every iteration so
+  /// that only the final iteration's values were printed, on the theory that
+  /// the two unconditional rules fire every iteration while the distance-based
+  /// ones can flip, so running totals would inflate the former. The theory was
+  /// wrong in a way that destroyed the measurement: by the final iteration the
+  /// calls already point at their stubs, so needsStub() says no everywhere and
+  /// all four buckets print zero. The real correction for the uneven weighting
+  /// is to print per-iteration deltas and let the reader see iteration 1 --
+  /// where the stubs are actually created -- separately. On clang that fixpoint
+  /// converges in 2 iterations, so the distortion was never large anyway.
   ///
   /// mutable because needsStub() is const and should stay const; counting is
   /// not a semantic change.
@@ -90,6 +94,39 @@ class LongJmpPass : public BinaryFunctionPass {
   mutable uint64_t NumStubsIgnoredForced{0};
   mutable uint64_t NumStubsMarginOnly{0};
   mutable uint64_t NumStubsGenuinelyFar{0};
+
+  /// Of the stubs the two forced rules demanded, how many were for targets a
+  /// plain in-range branch could have reached.
+  ///
+  /// This is the number the whole exercise is for. "A forced rule fired" is not
+  /// the same claim as "the stub was unnecessary": the forced rules skip the
+  /// distance test, so counting them says nothing about whether the target was
+  /// within a 26-bit +/-32MB `bl`. If these targets are mostly hundreds of MB
+  /// away, making the rules conditional buys nothing and the cost of the pass
+  /// is somewhere else entirely.
+  ///
+  /// AddrUnknown is counted separately rather than folded into WouldNotFit,
+  /// because the two mean opposite things. A target whose address BinaryContext
+  /// cannot resolve is a target the forced rule is *right* about -- that is the
+  /// rule's whole justification. Folding those into "too far" would manufacture
+  /// agreement with the rule out of an absence of data.
+  mutable uint64_t NumForcedWouldFit{0};
+  mutable uint64_t NumForcedWouldNotFit{0};
+  mutable uint64_t NumForcedAddrUnknown{0};
+
+  /// Resolve \p TgtSym for diagnostics without asserting if it cannot be
+  /// resolved. Deliberately not getSymbolAddress(), which asserts
+  /// "Unrecognized symbol" -- and the forced rules exist precisely because
+  /// these targets are the ones BOLT's layout cannot see, so asking through
+  /// the asserting path would abort the measurement instead of answering it.
+  /// Returns false when no address is available.
+  bool tryResolveForDiag(const BinaryContext &BC, const MCSymbol *TgtSym,
+                         uint64_t &Addr) const;
+
+  /// Record whether a stub one of the forced rules demanded was for a target
+  /// that an in-range branch could have reached.
+  void classifyForcedStub(const BinaryContext &BC, const MCInst &Inst,
+                          const MCSymbol *TgtSym, uint64_t DotAddress) const;
 
   /// The shortest distance for any branch instruction on AArch64.
   static constexpr size_t ShortestJumpBits = 11;

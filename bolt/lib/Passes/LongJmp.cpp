@@ -626,6 +626,75 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
   return Iter->second;
 }
 
+bool LongJmpPass::tryResolveForDiag(const BinaryContext &BC,
+                                    const MCSymbol *TgtSym,
+                                    uint64_t &Addr) const {
+  // Same two-step lookup as getSymbolAddress above, minus both of its asserts.
+  // getSymbolAddress is the right function for the pass's own arithmetic -- a
+  // symbol it cannot resolve there really is a bug. It is the wrong function to
+  // ask a diagnostic question with, because the callers below are precisely the
+  // cases where resolution is expected to fail sometimes, and an assert turns
+  // "no answer" into "no run".
+  uint64_t EntryID = 0;
+  const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+  if (TargetFunc && !EntryID) {
+    auto Iter = HotAddresses.find(TargetFunc);
+    if (Iter != HotAddresses.end()) {
+      Addr = Iter->second;
+      return true;
+    }
+  }
+  ErrorOr<uint64_t> ValueOrError = BC.getSymbolValue(*TgtSym);
+  if (!ValueOrError)
+    return false;
+  Addr = *ValueOrError;
+  return true;
+}
+
+void LongJmpPass::classifyForcedStub(const BinaryContext &BC,
+                                     const MCInst &Inst, const MCSymbol *TgtSym,
+                                     uint64_t DotAddress) const {
+  uint64_t TgtAddress = 0;
+  if (!tryResolveForDiag(BC, TgtSym, TgtAddress)) {
+    ++NumForcedAddrUnknown;
+    LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp FORCED_ADDR_UNKNOWN "
+                      << TgtSym->getName() << "\n");
+    return;
+  }
+
+  // Recomputed locally rather than hoisting the pass's own BitsAvail/MaxVal
+  // above the forced rules. Hoisting would move an assert() to fire on
+  // instructions that currently return before reaching it, which is a
+  // behaviour change smuggled in under a diagnostics commit.
+  //
+  // These are the UN-MARGINED bounds, matching UnmarginedMinVal/MaxVal below,
+  // so WouldFit is the widest honest reading: a conditional version of the
+  // forced rules would also want the 1MB call margin, which would move some of
+  // these into WouldNotFit. WouldFit is therefore an upper bound on the prize,
+  // which is the right direction for a number used to decide whether to build
+  // anything at all.
+  const int Bits = BC.MIB->getPCRelEncodingSize(Inst) - 1;
+  if (Bits <= 0 || Bits >= 63) {
+    ++NumForcedAddrUnknown;
+    return;
+  }
+  const int64_t MaxVal = (1LL << Bits) - 1;
+  const int64_t MinVal = -(1LL << Bits);
+  const int64_t PCOffset = (int64_t)(TgtAddress - DotAddress);
+
+  if (PCOffset >= MinVal && PCOffset <= MaxVal) {
+    ++NumForcedWouldFit;
+    LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp FORCED_WOULD_FIT "
+                      << TgtSym->getName() << " PCOffset " << PCOffset
+                      << " within [" << MinVal << ", " << MaxVal << "]\n");
+  } else {
+    ++NumForcedWouldNotFit;
+    LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp FORCED_WOULD_NOT_FIT "
+                      << TgtSym->getName() << " PCOffset " << PCOffset
+                      << " outside [" << MinVal << ", " << MaxVal << "]\n");
+  }
+}
+
 Error LongJmpPass::relaxStub(BinaryBasicBlock &StubBB, bool &Modified) {
   BinaryFunction &Func = *StubBB.getFunction();
   BinaryContext &BC = Func.getBinaryContext();
@@ -764,6 +833,7 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
       LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp PLT_FORCED "
                         << TgtSym->getName() << " from " << Func << " at 0x"
                         << Twine::utohexstr(DotAddress) << "\n");
+      classifyForcedStub(BC, Inst, TgtSym, DotAddress);
       return true;
     }
     uint64_t EntryID = 0;
@@ -774,6 +844,7 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
       LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp IGNORED_FORCED "
                         << TgtSym->getName() << " from " << Func << " at 0x"
                         << Twine::utohexstr(DotAddress) << "\n");
+      classifyForcedStub(BC, Inst, TgtSym, DotAddress);
       return true;
     }
   }
@@ -2144,17 +2215,15 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
   BinaryFunctionListType Sorted = BC.getOutputBinaryFunctions();
   bool Modified;
   uint32_t Iterations = 0;
+  // PPC64 diagnostics: snapshot the running attribution totals so each
+  // iteration can report its own delta. Deltas rather than a reset, because a
+  // reset loses the totals and -- as a first attempt at this showed -- the
+  // final iteration's own numbers are all zero, since by then every call
+  // already points at its stub.
+  uint64_t PrevPLT = 0, PrevIgnored = 0, PrevMargin = 0, PrevFar = 0;
   do {
     ++Iterations;
     Modified = false;
-    // Reset the attribution buckets every iteration so the values that survive
-    // to the print below are the final iteration's. See the comment on these
-    // members: running totals would over-count the two unconditional rules,
-    // which fire every iteration, relative to the distance-based ones.
-    NumStubsPLTForced = 0;
-    NumStubsIgnoredForced = 0;
-    NumStubsMarginOnly = 0;
-    NumStubsGenuinelyFar = 0;
     tentativeLayout(BC, Sorted);
     updateStubGroups();
     for (BinaryFunction *Func : Sorted) {
@@ -2164,6 +2233,21 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
       // changed.
       if (Modified && Func->isSimple())
         Func->fixBranches(getBranchLiveness(*Func));
+    }
+    if (BC.isPPC64()) {
+      BC.outs() << "BOLT-INFO: PPC64 stub attribution, iteration " << Iterations
+                << ": " << (NumStubsPLTForced - PrevPLT)
+                << " forced by .plt_call/.plt_branch, "
+                << (NumStubsIgnoredForced - PrevIgnored)
+                << " forced by ignored target, "
+                << (NumStubsMarginOnly - PrevMargin)
+                << " only by the 1MB margin, "
+                << (NumStubsGenuinelyFar - PrevFar)
+                << " genuinely out of range.\n";
+      PrevPLT = NumStubsPLTForced;
+      PrevIgnored = NumStubsIgnoredForced;
+      PrevMargin = NumStubsMarginOnly;
+      PrevFar = NumStubsGenuinelyFar;
     }
   } while (Modified);
 
@@ -2217,30 +2301,41 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
             << " stubs in the cold area. Shared " << NumSharedStubs
             << " times, iterated " << Iterations << " times.\n";
 
-  // PPC64 only, and on its own line, so no existing AArch64 test output moves.
+  // PPC64 only, and on their own lines, so no existing AArch64 test output
+  // moves.
   //
-  // These four partition the call sites that needed a stub in the FINAL
-  // iteration. They are not expected to sum to the inserted-stub totals above:
-  // those count stubs created across all iterations, with sharing, while these
-  // count sites at the fixpoint. The question they exist to answer is which
-  // rule dominates, and for that the denominators need only be consistent with
-  // each other.
+  // These are totals over every iteration, so they do not sum to the
+  // inserted-stub count above: that counts stubs created, with sharing, while
+  // these count decisions. A target is re-decided on each iteration, so with N
+  // iterations a stable decision is counted N times. The per-iteration lines
+  // printed inside the loop are there to make that visible rather than
+  // something the reader has to know.
   if (BC.isPPC64()) {
     const uint64_t Total = NumStubsPLTForced + NumStubsIgnoredForced +
                            NumStubsMarginOnly + NumStubsGenuinelyFar;
-    BC.outs() << "BOLT-INFO: PPC64 stub attribution at the fixpoint: "
+    BC.outs() << "BOLT-INFO: PPC64 stub attribution, all iterations: "
               << NumStubsPLTForced << " forced by .plt_call/.plt_branch, "
               << NumStubsIgnoredForced << " forced by ignored target, "
               << NumStubsMarginOnly << " only by the 1MB margin, "
               << NumStubsGenuinelyFar << " genuinely out of range (total "
               << Total << ").\n";
-    if (Total) {
-      const uint64_t Recoverable =
-          NumStubsPLTForced + NumStubsIgnoredForced + NumStubsMarginOnly;
-      BC.outs() << "BOLT-INFO: PPC64 stubs no distance test demanded: "
-                << Recoverable << " of " << Total << " ("
-                << (100 * Recoverable / Total) << "%).\n";
-    }
+
+    // The number the pass's cost actually turns on. A forced rule firing does
+    // not mean the stub was avoidable -- the forced rules skip the distance
+    // test, so they say nothing about reach. WouldFit is the subset that a
+    // plain in-range branch could have handled, and only that subset is a
+    // prize. AddrUnknown is reported separately and must not be read as
+    // either: it is the case the forced rules were written for.
+    const uint64_t Forced =
+        NumForcedWouldFit + NumForcedWouldNotFit + NumForcedAddrUnknown;
+    BC.outs() << "BOLT-INFO: PPC64 forced-stub reach: " << NumForcedWouldFit
+              << " would have fit in range, " << NumForcedWouldNotFit
+              << " would not, " << NumForcedAddrUnknown
+              << " target address unresolvable (total " << Forced << ").\n";
+    if (Total)
+      BC.outs() << "BOLT-INFO: PPC64 avoidable share: " << NumForcedWouldFit
+                << " of " << Total << " decisions ("
+                << (100 * NumForcedWouldFit / Total) << "%).\n";
   }
   return Error::success();
 }
