@@ -66,6 +66,31 @@ class LongJmpPass : public BinaryFunctionPass {
   uint32_t NumColdStubs{0};
   uint32_t NumSharedStubs{0};
 
+  /// PPC64 ELFv2 diagnostics: why needsStub() said yes.
+  ///
+  /// The aggregate counters above say how many stubs exist but not which rule
+  /// demanded them, and on PPC64 four quite different rules can. Two of them --
+  /// the forced .plt_call./.plt_branch. rule and the forced ignored-function
+  /// rule -- return true with no distance test at all, so they could in
+  /// principle be producing stubs for targets that were comfortably in range.
+  /// Whether they are is a measurement nobody has taken.
+  ///
+  /// These are reset at the top of every iteration of the relaxation fixpoint,
+  /// so the values that get printed are from the LAST iteration only. That
+  /// matters: the two forced rules fire on every iteration unconditionally
+  /// while the distance-based ones can flip, so running totals would inflate
+  /// precisely the buckets one would hope to see dominate. In the final
+  /// iteration no stub is created -- that is what ends the loop -- so every
+  /// call site is evaluated exactly once and the four buckets partition the
+  /// sites that genuinely need a stub.
+  ///
+  /// mutable because needsStub() is const and should stay const; counting is
+  /// not a semantic change.
+  mutable uint64_t NumStubsPLTForced{0};
+  mutable uint64_t NumStubsIgnoredForced{0};
+  mutable uint64_t NumStubsMarginOnly{0};
+  mutable uint64_t NumStubsGenuinelyFar{0};
+
   /// The shortest distance for any branch instruction on AArch64.
   static constexpr size_t ShortestJumpBits = 11;
   static constexpr size_t ShortestJumpSpan = 1ULL << (ShortestJumpBits - 1);

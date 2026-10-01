@@ -759,13 +759,23 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   // which uses 'bctr' -- unaffected by where JITLink puts its stub table.
   if (BC.isPPC64() && BC.MIB->isCall(Inst) && !TgtBB) {
     if (TgtSym->getName().contains(".plt_call.") ||
-        TgtSym->getName().contains(".plt_branch."))
+        TgtSym->getName().contains(".plt_branch.")) {
+      ++NumStubsPLTForced;
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp PLT_FORCED "
+                        << TgtSym->getName() << " from " << Func << " at 0x"
+                        << Twine::utohexstr(DotAddress) << "\n");
       return true;
+    }
     uint64_t EntryID = 0;
     const BinaryFunction *TargetFunc =
         BC.getFunctionForSymbol(TgtSym, &EntryID);
-    if (TargetFunc && TargetFunc->isIgnored())
+    if (TargetFunc && TargetFunc->isIgnored()) {
+      ++NumStubsIgnoredForced;
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp IGNORED_FORCED "
+                        << TgtSym->getName() << " from " << Func << " at 0x"
+                        << Twine::utohexstr(DotAddress) << "\n");
       return true;
+    }
   }
 
   int BitsAvail = BC.MIB->getPCRelEncodingSize(Inst) - 1;
@@ -773,6 +783,12 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
                            "check for out-of-bounds.");
   int64_t MaxVal = (1ULL << BitsAvail) - 1;
   int64_t MinVal = -(1ULL << BitsAvail);
+
+  // Keep the un-margined bounds so the PPC64 diagnostics below can tell a
+  // branch that is genuinely out of reach from one that only the margin added
+  // further down pushed over.
+  const int64_t UnmarginedMaxVal = MaxVal;
+  const int64_t UnmarginedMinVal = MinVal;
 
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
@@ -798,7 +814,30 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
     MinVal += Margin;
   }
 
-  return PCOffset < MinVal || PCOffset > MaxVal;
+  const bool NeedsStub = PCOffset < MinVal || PCOffset > MaxVal;
+
+  // Split the distance-driven stubs into the two buckets that matter: those the
+  // 1MB margin alone demanded, and those that would be out of range regardless.
+  // The first group is recoverable in principle; the second is not.
+  if (BC.isPPC64() && NeedsStub) {
+    const bool FarWithoutMargin =
+        PCOffset < UnmarginedMinVal || PCOffset > UnmarginedMaxVal;
+    if (FarWithoutMargin) {
+      ++NumStubsGenuinelyFar;
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp GENUINELY_FAR "
+                        << TgtSym->getName() << " from " << Func << " PCOffset "
+                        << PCOffset << " bits " << BitsAvail << "\n");
+    } else {
+      ++NumStubsMarginOnly;
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: longjmp MARGIN_ONLY "
+                        << TgtSym->getName() << " from " << Func << " PCOffset "
+                        << PCOffset << " would have fit in ["
+                        << UnmarginedMinVal << ", " << UnmarginedMaxVal
+                        << "]\n");
+    }
+  }
+
+  return NeedsStub;
 }
 
 Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
@@ -2108,6 +2147,14 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
   do {
     ++Iterations;
     Modified = false;
+    // Reset the attribution buckets every iteration so the values that survive
+    // to the print below are the final iteration's. See the comment on these
+    // members: running totals would over-count the two unconditional rules,
+    // which fire every iteration, relative to the distance-based ones.
+    NumStubsPLTForced = 0;
+    NumStubsIgnoredForced = 0;
+    NumStubsMarginOnly = 0;
+    NumStubsGenuinelyFar = 0;
     tentativeLayout(BC, Sorted);
     updateStubGroups();
     for (BinaryFunction *Func : Sorted) {
@@ -2169,6 +2216,32 @@ Error LongJmpPass::runOnFunctions(BinaryContext &BC) {
             << " stubs in the hot area and " << NumColdStubs
             << " stubs in the cold area. Shared " << NumSharedStubs
             << " times, iterated " << Iterations << " times.\n";
+
+  // PPC64 only, and on its own line, so no existing AArch64 test output moves.
+  //
+  // These four partition the call sites that needed a stub in the FINAL
+  // iteration. They are not expected to sum to the inserted-stub totals above:
+  // those count stubs created across all iterations, with sharing, while these
+  // count sites at the fixpoint. The question they exist to answer is which
+  // rule dominates, and for that the denominators need only be consistent with
+  // each other.
+  if (BC.isPPC64()) {
+    const uint64_t Total = NumStubsPLTForced + NumStubsIgnoredForced +
+                           NumStubsMarginOnly + NumStubsGenuinelyFar;
+    BC.outs() << "BOLT-INFO: PPC64 stub attribution at the fixpoint: "
+              << NumStubsPLTForced << " forced by .plt_call/.plt_branch, "
+              << NumStubsIgnoredForced << " forced by ignored target, "
+              << NumStubsMarginOnly << " only by the 1MB margin, "
+              << NumStubsGenuinelyFar << " genuinely out of range (total "
+              << Total << ").\n";
+    if (Total) {
+      const uint64_t Recoverable =
+          NumStubsPLTForced + NumStubsIgnoredForced + NumStubsMarginOnly;
+      BC.outs() << "BOLT-INFO: PPC64 stubs no distance test demanded: "
+                << Recoverable << " of " << Total << " ("
+                << (100 * Recoverable / Total) << "%).\n";
+    }
+  }
   return Error::success();
 }
 } // namespace bolt
