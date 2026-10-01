@@ -1019,7 +1019,18 @@ MCSymbol *BinaryContext::getOrCreateGlobalSymbol(uint64_t Address, Twine Prefix,
     // own symbol, but the FUNCat0x name is never inserted in GlobalSymbols.
     // Downstream getSymbolValue() calls then fail (returns bad_address) and
     // in Release builds the assert is a no-op, causing UB.
-    std::string Name = (Prefix + "0x" + Twine::utohexstr(Address)).str();
+    //
+    // GlobalSymbols is a DenseMap<StringRef, BinaryData *>, so its keys do not
+    // own their characters and must outlive the map. Intern the name in
+    // MCContext and key on the MCContext-owned string, exactly as
+    // registerNameAtAddress() does. Keying on a local std::string instead left
+    // a dangling key behind on every call: once the buffer was recycled the
+    // key's characters changed underneath the map, which made count() report a
+    // name that was never registered and tripped the "created name is not
+    // unique" assertion below on an address that is absent from BinaryDataMap.
+    MCSymbol *Alias =
+        Ctx->getOrCreateSymbol(Prefix + "0x" + Twine::utohexstr(Address));
+    StringRef Name = Alias->getName();
     if (!GlobalSymbols.count(Name))
       GlobalSymbols[Name] = Itr->second;
     return Itr->second->getSymbol();
