@@ -3997,8 +3997,19 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
     } else {
       // These are mostly local data symbols but undefined symbols
       // in relocation sections can get through here too, from .plt.
+      //
+      // PPC64 is exempt for the same reason AArch64 and RISCV are, plus one of
+      // its own. The ld-generated call stubs on this target -- the
+      // NNNNNNNN.plt_branch.<mangled> and NNNNNNNN.long_branch.<mangled>
+      // symbols -- sit in no section BOLT has registered, so
+      // getSectionNameForAddress() returns std::errc::bad_address and the
+      // unchecked operator-> below it aborts the process before the assertion
+      // can even be evaluated. Measured on cfarm135 at ef0ce3a6da0b: rewriting
+      // a 166 MB ppc64le llc dies in ErrorOr<StringRef>::getStorage() with
+      // "Cannot get value when an error exists!", from handleRelocation(), two
+      // lines after BOLT reports those two stub symbols.
       assert(
-          (IsAArch64 || BC->isRISCV() || IsSectionRelocation ||
+          (IsAArch64 || IsPPC64 || BC->isRISCV() || IsSectionRelocation ||
            BC->getSectionNameForAddress(SymbolAddress)->starts_with(".plt")) &&
           "known symbols should not resolve to anonymous locals");
 
