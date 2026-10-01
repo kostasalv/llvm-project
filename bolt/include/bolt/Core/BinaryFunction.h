@@ -693,9 +693,8 @@ private:
     const uint64_t IslandStart = *It;
     // Compute the island end: next code offset after IslandStart
     auto CodeIt = Islands->CodeOffsets.upper_bound(IslandStart);
-    const uint64_t IslandEnd = (CodeIt != Islands->CodeOffsets.end())
-                                   ? *CodeIt
-                                   : getMaxSize();
+    const uint64_t IslandEnd =
+        (CodeIt != Islands->CodeOffsets.end()) ? *CodeIt : getMaxSize();
     return Offset >= IslandStart && Offset < IslandEnd;
   }
 

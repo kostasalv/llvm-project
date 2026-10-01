@@ -1387,9 +1387,9 @@ void RewriteInstance::discoverFileObjects() {
       // wrong and exceeds the 26-bit ±32MB range, causing JITLink
       // CallBranchDelta fixup errors.  Keep them at their original addresses
       // by marking them ignored (non-simple → emitted as raw bytes in-place).
-      if (BC->isPPC64() && (SymName.contains(".long_branch.") ||
-                            SymName.contains(".plt_branch.") ||
-                            SymName.contains(".plt_call.")))
+      if (BC->isPPC64() &&
+          (SymName.contains(".long_branch.") ||
+           SymName.contains(".plt_branch.") || SymName.contains(".plt_call.")))
         BF->setIgnored();
       // Some PPC64 linkers place the executable PLT call stubs in .text
       // instead of .plt/.iplt. Treat their named __plt_* symbols like the
@@ -1401,16 +1401,17 @@ void RewriteInstance::discoverFileObjects() {
       // or rewrite, e.g. functions with unsupported instructions or jump tables
       // BOLT doesn't control) contain raw `b`/`bl` instructions with
       // R_PPC64_REL24 displacements encoded relative to their original address.
-      // When BOLT relocates a non-simple function to a new address in relocation
-      // mode, the stale displacement causes 'branch target out of range' errors
-      // at assembly time.  Mark all non-simple PPC64 functions as ignored so
-      // they are emitted as raw bytes at their original addresses and their
-      // encoded displacements remain correct.
+      // When BOLT relocates a non-simple function to a new address in
+      // relocation mode, the stale displacement causes 'branch target out of
+      // range' errors at assembly time.  Mark all non-simple PPC64 functions as
+      // ignored so they are emitted as raw bytes at their original addresses
+      // and their encoded displacements remain correct.
       if (BC->isPPC64() && !IsSimple)
         BF->setIgnored();
       // PPC64 ELFv2: record the local entry offset from st_other so that
       // interprocedural references to func+localEntryOffset are not treated as
-      // secondary entry points (they are the ABI local entry, not real entries).
+      // secondary entry points (they are the ABI local entry, not real
+      // entries).
       if (BC->isPPC64()) {
         unsigned Other = ELFSymbolRef(Symbol).getOther();
         int64_t LEOff = ELF::decodePPC64LocalEntryOffset(Other);
@@ -3440,7 +3441,6 @@ void RewriteInstance::readBranchLTRelocations(BinarySection &BranchLTSection) {
     handleRelativeDynamicRelocation(Offset, Addend);
   }
 }
-
 
 void RewriteInstance::readDynamicRelrRelocations(BinarySection &Section) {
   assert(Section.isAllocatable() && "allocatable expected");
@@ -6856,7 +6856,7 @@ void RewriteInstance::patchELFBranchLT(ELFObjectFile<ELFT> *File) {
   for (const uint64_t *Entry =
            reinterpret_cast<const uint64_t *>(BranchLTContents.data());
        Entry < reinterpret_cast<const uint64_t *>(BranchLTContents.data() +
-                                                   BranchLTContents.size());
+                                                  BranchLTContents.size());
        ++Entry) {
     if (uint64_t NewAddress = getNewFunctionAddress(*Entry)) {
       LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching .branch_lt entry 0x"
@@ -6898,9 +6898,9 @@ void RewriteInstance::patchELFFuncArraysPPC64(ELFObjectFile<ELFT> *File) {
 
     for (uint64_t Offset = 0; Offset + EntrySize <= Contents.size();
          Offset += EntrySize) {
-      uint64_t Entry = IsLE
-          ? support::endian::read64le(Contents.data() + Offset)
-          : support::endian::read64be(Contents.data() + Offset);
+      uint64_t Entry =
+          IsLE ? support::endian::read64le(Contents.data() + Offset)
+               : support::endian::read64be(Contents.data() + Offset);
 
       if (!Entry)
         continue;
@@ -6915,10 +6915,9 @@ void RewriteInstance::patchELFFuncArraysPPC64(ELFObjectFile<ELFT> *File) {
       if (NewGEP == Entry || NewGEP == 0)
         continue;
 
-      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching " << SectionName
-                        << " entry 0x" << Twine::utohexstr(Entry)
-                        << " -> new GEP 0x" << Twine::utohexstr(NewGEP)
-                        << '\n');
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: patching " << SectionName << " entry 0x"
+                        << Twine::utohexstr(Entry) << " -> new GEP 0x"
+                        << Twine::utohexstr(NewGEP) << '\n');
 
       uint64_t FileOffset =
           reinterpret_cast<const char *>(Contents.data() + Offset) - Data;
@@ -7187,8 +7186,7 @@ uint64_t RewriteInstance::getNewFunctionOrDataAddress(uint64_t OldAddress) {
       // immediately followed by the local entry), so the new address is
       // simply the function's new output address plus the same offset.
       if (BC->isPPC64() && BF->getPPC64LocalEntryOffset() &&
-          OldAddress ==
-              BF->getAddress() + BF->getPPC64LocalEntryOffset())
+          OldAddress == BF->getAddress() + BF->getPPC64LocalEntryOffset())
         return BF->getOutputAddress() + BF->getPPC64LocalEntryOffset();
 
       // If OldAddress is another entry point of the function or the target of
@@ -7477,7 +7475,6 @@ void RewriteInstance::rewriteFile() {
     patchELFGOT();
     patchELFBranchLT();
   }
-
 
   // PPC64 ELFv2: patch .init_array and .fini_array to use LEP (GEP+8)
   // for functions with a TOC-setup prologue. This is required for both

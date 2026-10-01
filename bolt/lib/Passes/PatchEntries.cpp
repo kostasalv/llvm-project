@@ -251,7 +251,8 @@ Error PatchEntries::runOnFunctions(BinaryContext &BC) {
 
     // Patch functions in creation order, so that a patch forwarding to another
     // one (PPC64 global -> local entry point) can name its target's symbol.
-    std::vector<BinaryFunction *> PatchFunctions(PendingPatches.size(), nullptr);
+    std::vector<BinaryFunction *> PatchFunctions(PendingPatches.size(),
+                                                 nullptr);
 
     for (unsigned Idx = 0; Idx < PendingPatches.size(); ++Idx) {
       Patch &Patch = PendingPatches[Idx];

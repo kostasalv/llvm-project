@@ -634,8 +634,7 @@ private:
       {".plt", 16}, {".iplt", 16}, {nullptr}};
 
   /// PPC64 ELFv2 PLT sections.
-  const PLTSectionInfo PPC64_PLTSections[3] = {{".plt"}, {".iplt"},
-                                                {nullptr}};
+  const PLTSectionInfo PPC64_PLTSections[3] = {{".plt"}, {".iplt"}, {nullptr}};
 
   /// Return PLT information for a section with \p SectionName or nullptr
   /// if the section is not PLT.

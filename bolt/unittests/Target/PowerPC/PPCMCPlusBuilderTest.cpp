@@ -93,12 +93,12 @@ public:
 
 protected:
   void initalizeLLVM() {
-#define BOLT_TARGET(target)                                                  \
-  LLVMInitialize##target##TargetInfo();                                      \
-  LLVMInitialize##target##TargetMC();                                        \
-  LLVMInitialize##target##AsmParser();                                       \
-  LLVMInitialize##target##Disassembler();                                    \
-  LLVMInitialize##target##Target();                                          \
+#define BOLT_TARGET(target)                                                    \
+  LLVMInitialize##target##TargetInfo();                                        \
+  LLVMInitialize##target##TargetMC();                                          \
+  LLVMInitialize##target##AsmParser();                                         \
+  LLVMInitialize##target##Disassembler();                                      \
+  LLVMInitialize##target##Target();                                            \
   LLVMInitialize##target##AsmPrinter();
 
 #include "bolt/Core/TargetConfig.def"
@@ -221,7 +221,7 @@ TEST_F(PPCMCPlusBuilderFixture, PCRelEncodingSize_BDNZL_Is16Bit) {
 
 TEST_F(PPCMCPlusBuilderFixture, PCRelEncodingSize_BC_Family_Is16Bit) {
   for (unsigned Opc : {PPC::BC, PPC::gBC, PPC::BCL, PPC::gBCL, PPC::BCC,
-                      PPC::BCCA, PPC::BCCL, PPC::BCCLA}) {
+                       PPC::BCCA, PPC::BCCL, PPC::BCCLA}) {
     MCInst I;
     I.setOpcode(Opc);
     EXPECT_EQ(BC->MIB->getPCRelEncodingSize(I), 16)
@@ -256,10 +256,9 @@ TEST_F(PPCMCPlusBuilderFixture, PCRelEncodingSize_B_Family_Is26Bit) {
 // bitset-scan loop) when BOLT-rewriting a real ppc64le binary (llc) with
 // zero optimization flags.
 TEST_F(PPCMCPlusBuilderFixture, IsBranch_BDZ_Family) {
-  for (unsigned Opc :
-       {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm, PPC::BDZLm,
-        PPC::BDNZ, PPC::BDNZL, PPC::BDNZp, PPC::BDNZLp, PPC::BDNZm,
-        PPC::BDNZLm}) {
+  for (unsigned Opc : {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm,
+                       PPC::BDZLm, PPC::BDNZ, PPC::BDNZL, PPC::BDNZp,
+                       PPC::BDNZLp, PPC::BDNZm, PPC::BDNZLm}) {
     MCInst I;
     I.setOpcode(Opc);
     EXPECT_TRUE(BC->MIB->isBranch(I))
@@ -273,10 +272,9 @@ TEST_F(PPCMCPlusBuilderFixture, IsConditionalBranch_BDZ_Family) {
   // "IsPrevFT = MIB->isConditionalBranch(*LastInstr)" fallthrough-edge logic
   // (BinaryFunction.cpp's addSuccessor loop, ~line 2619) to treat a
   // bdz-terminated block as having no fallthrough successor at all.
-  for (unsigned Opc :
-       {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm, PPC::BDZLm,
-        PPC::BDNZ, PPC::BDNZL, PPC::BDNZp, PPC::BDNZLp, PPC::BDNZm,
-        PPC::BDNZLm}) {
+  for (unsigned Opc : {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm,
+                       PPC::BDZLm, PPC::BDNZ, PPC::BDNZL, PPC::BDNZp,
+                       PPC::BDNZLp, PPC::BDNZm, PPC::BDNZLm}) {
     MCInst I;
     I.setOpcode(Opc);
     EXPECT_TRUE(BC->MIB->isConditionalBranch(I))
@@ -285,9 +283,8 @@ TEST_F(PPCMCPlusBuilderFixture, IsConditionalBranch_BDZ_Family) {
 }
 
 TEST_F(PPCMCPlusBuilderFixture, PCRelEncodingSize_BDZ_Family_Is16Bit) {
-  for (unsigned Opc :
-       {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm, PPC::BDZLm,
-        PPC::BDZ8, PPC::BDNZ8}) {
+  for (unsigned Opc : {PPC::BDZ, PPC::BDZL, PPC::BDZp, PPC::BDZLp, PPC::BDZm,
+                       PPC::BDZLm, PPC::BDZ8, PPC::BDNZ8}) {
     MCInst I;
     I.setOpcode(Opc);
     EXPECT_EQ(BC->MIB->getPCRelEncodingSize(I), 16)
@@ -307,7 +304,8 @@ TEST_F(PPCMCPlusBuilderFixture, IsReversibleBranch_BDZ_Family_IsFalse) {
   }
 }
 
-TEST_F(PPCMCPlusBuilderFixture, AnalyzeBranch_BDZ_IsConditionalWithFallthrough) {
+TEST_F(PPCMCPlusBuilderFixture,
+       AnalyzeBranch_BDZ_IsConditionalWithFallthrough) {
   // A block ending in bdz to a resolvable target should be analyzed the
   // same way as a block ending in bdnz: a conditional branch with an
   // assumed fallthrough successor (computed precisely later once the CFG
@@ -452,8 +450,8 @@ TEST_F(PPCMCPlusBuilderFixture, IsReturn_BLR_And_BLR8) {
 }
 
 TEST_F(PPCMCPlusBuilderFixture, IsBranch_CTR_And_LR_Twins) {
-  for (unsigned Opc : {PPC::BCTR, PPC::BCTR8, PPC::BCTRL, PPC::BCTRL8,
-                       PPC::BLR, PPC::BLR8}) {
+  for (unsigned Opc :
+       {PPC::BCTR, PPC::BCTR8, PPC::BCTRL, PPC::BCTRL8, PPC::BLR, PPC::BLR8}) {
     MCInst I;
     I.setOpcode(Opc);
     EXPECT_TRUE(BC->MIB->isBranch(I))
@@ -485,8 +483,9 @@ TEST_F(PPCMCPlusBuilderFixture, ConvertJmpToTailCall_BCTR8) {
     EXPECT_TRUE(BC->MIB->convertJmpToTailCall(I))
         << "opcode " << Opc << " should be convertible to a tail call";
     EXPECT_TRUE(BC->MIB->isTailCall(I))
-        << "opcode " << Opc << " should carry the tail-call annotation after "
-                               "convertJmpToTailCall()";
+        << "opcode " << Opc
+        << " should carry the tail-call annotation after "
+           "convertJmpToTailCall()";
   }
 }
 
@@ -574,8 +573,7 @@ TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_AbsoluteBranchesAreRejected) {
 TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_PrefixedFixupsAreRejected) {
   EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_pcrel34, symExpr("d")).has_value());
   EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_imm34, symExpr("d")).has_value());
-  EXPECT_FALSE(
-      relocForFixup(PPC::fixup_ppc_pcrel32, symExpr("d")).has_value());
+  EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_pcrel32, symExpr("d")).has_value());
   EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_imm32, symExpr("d")).has_value());
 }
 
@@ -606,8 +604,8 @@ TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_Half16FollowsTheSpecifier) {
     EXPECT_EQ(R->Type, C.Type) << "specifier " << C.Spec;
     // getSizeForTypePPC64() llvm_unreachable()s on a type it does not list,
     // and scanExternalRefs() calls it on whatever comes back from here.
-    EXPECT_EQ(Relocation::getSizeForType(R->Type), 2u) << "specifier "
-                                                       << C.Spec;
+    EXPECT_EQ(Relocation::getSizeForType(R->Type), 2u)
+        << "specifier " << C.Spec;
   }
 }
 
@@ -645,19 +643,17 @@ TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_DSFormKeepsTheOpcodeBits) {
 TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_OtherSpecifiersAreRejected) {
   for (uint16_t Spec : {PPC::S_GOT, PPC::S_GOT_HA, PPC::S_TOC, PPC::S_TOC_LO,
                         PPC::S_PLT, PPC::S_TPREL, PPC::S_DTPREL_HA})
-    EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, symExpr("sym", Spec))
-                     .has_value())
+    EXPECT_FALSE(
+        relocForFixup(PPC::fixup_ppc_half16, symExpr("sym", Spec)).has_value())
         << "specifier " << Spec;
 }
 
 // The addend has to survive: scanExternalRefs() re-emits the relocation as
 // (Symbol, Type, Addend), so dropping it retargets `sym + 8` at `sym`.
 TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_KeepsTheAddend) {
-  const MCExpr *SymPlus8 =
-      MCBinaryExpr::createAdd(symExpr("sym", PPC::S_LO),
-                              MCConstantExpr::create(8, *BC->Ctx), *BC->Ctx);
-  std::optional<Relocation> R =
-      relocForFixup(PPC::fixup_ppc_half16, SymPlus8);
+  const MCExpr *SymPlus8 = MCBinaryExpr::createAdd(
+      symExpr("sym", PPC::S_LO), MCConstantExpr::create(8, *BC->Ctx), *BC->Ctx);
+  std::optional<Relocation> R = relocForFixup(PPC::fixup_ppc_half16, SymPlus8);
   ASSERT_TRUE(R.has_value());
   EXPECT_EQ(R->Type, uint32_t(ELF::R_PPC64_ADDR16_LO));
   EXPECT_EQ(R->Symbol->getName(), "sym");
@@ -694,8 +690,7 @@ TEST_F(PPCMCPlusBuilderFixture, CreateRelocation_RejectsUnparsableExpressions) {
       MCBinaryExpr::createAdd(MCSymbolRefExpr::create(TOC, *BC->Ctx),
                               MCConstantExpr::create(4, *BC->Ctx), *BC->Ctx),
       MCSymbolRefExpr::create(Label, *BC->Ctx), *BC->Ctx);
-  const MCExpr *Preamble =
-      MCSpecifierExpr::create(Diff, PPC::S_LO, *BC->Ctx);
+  const MCExpr *Preamble = MCSpecifierExpr::create(Diff, PPC::S_LO, *BC->Ctx);
 
   EXPECT_FALSE(relocForFixup(PPC::fixup_ppc_half16, Preamble).has_value());
   // The bare subtraction is just as unparsable, without the wrapper.

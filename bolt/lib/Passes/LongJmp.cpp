@@ -208,9 +208,9 @@ LongJmpPass::createNewStub(BinaryBasicBlock &SourceBB, const MCSymbol *TgtSym,
   Stubs[&Func].insert(StubBB.get());
   // Long-jump stubs are already at maximum encoding; set StubBits to 64 so
   // relaxStub() skips them (early return at the Bits==64 check).
-  StubBits[StubBB.get()] = UseLongJmp
-      ? static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8)
-      : BC.MIB->getUncondBranchEncodingSize();
+  StubBits[StubBB.get()] =
+      UseLongJmp ? static_cast<int>(BC.AsmInfo->getCodePointerSize() * 8)
+                 : BC.MIB->getUncondBranchEncodingSize();
   // Immediately register the stub's tentative address so that lookupStub
   // calls within the same relax() iteration (e.g. a second call in the same
   // function) can range-check against a valid address rather than UB.
@@ -320,7 +320,8 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
   // target symbol.  needsStub() already returns false for null TgtSym, so this
   // path should not be reached — but guard defensively for release builds.
   if (!TgtSym) {
-    if (BC.isPPC64()) return NewBB; // return empty unique_ptr, no stub created
+    if (BC.isPPC64())
+      return NewBB; // return empty unique_ptr, no stub created
     assert(TgtSym && "getTargetSymbol failed");
   }
 
@@ -334,7 +335,8 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
     auto SSIter = SharedStubs.find(TgtSym);
     if (SSIter != SharedStubs.end()) {
       TgtSym = BC.MIB->getTargetSymbol(*SSIter->second->begin());
-      if (!TgtSym && BC.isPPC64()) return NewBB; // unsymbolized stub on PPC64
+      if (!TgtSym && BC.isPPC64())
+        return NewBB; // unsymbolized stub on PPC64
       --NumSharedStubs;
     }
   } else if (LocalStubsIter != Stubs.end() &&
@@ -343,7 +345,8 @@ LongJmpPass::replaceTargetWithStub(BinaryBasicBlock &BB, MCInst &Inst,
     // So, we are attempting to restore BB to its previous state without using
     // this stub.
     TgtSym = BC.MIB->getTargetSymbol(*TgtBB->begin());
-    if (!TgtSym && BC.isPPC64()) return NewBB; // unsymbolized stub on PPC64
+    if (!TgtSym && BC.isPPC64())
+      return NewBB; // unsymbolized stub on PPC64
     assert(TgtSym &&
            "First instruction is expected to contain a target symbol.");
     BinaryBasicBlock *TgtBBSucc = TgtBB->getSuccessor(TgtSym, BI);
@@ -709,7 +712,8 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   // stub and would loop forever.
   if (BC.isPPC64() && TgtBB) {
     auto StubsIter = Stubs.find(&Func);
-    bool IsLocalStub = StubsIter != Stubs.end() && StubsIter->second.count(TgtBB);
+    bool IsLocalStub =
+        StubsIter != Stubs.end() && StubsIter->second.count(TgtBB);
     bool IsSharedStub = SharedStubs.count(TgtSym) != 0;
     if (IsLocalStub || IsSharedStub) {
       const MCSymbol *InnerSym = BC.MIB->getTargetSymbol(*TgtBB->begin());
@@ -726,7 +730,8 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
   // and we must create a stub because the distance to it may exceed ±32MB.
   if (BC.isPPC64() && !BC.MIB->isCall(Inst) && !TgtBB) {
     uint64_t EntryID = 0;
-    const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+    const BinaryFunction *TargetFunc =
+        BC.getFunctionForSymbol(TgtSym, &EntryID);
     if (TargetFunc && !TargetFunc->isSimple() && !TargetFunc->isIgnored())
       return false;
   }
@@ -757,7 +762,8 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
         TgtSym->getName().contains(".plt_branch."))
       return true;
     uint64_t EntryID = 0;
-    const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+    const BinaryFunction *TargetFunc =
+        BC.getFunctionForSymbol(TgtSym, &EntryID);
     if (TargetFunc && TargetFunc->isIgnored())
       return true;
   }
@@ -770,7 +776,6 @@ bool LongJmpPass::needsStub(const BinaryBasicBlock &BB, const MCInst &Inst,
 
   uint64_t PCRelTgtAddress = getSymbolAddress(BC, TgtSym, TgtBB);
   int64_t PCOffset = (int64_t)(PCRelTgtAddress - DotAddress);
-
 
   // PPC64 ELFv2: reserve a small safety margin specifically for calls
   // (26-bit ±32MB `bl`).  BOLT's tentative layout (used here) and the actual
@@ -893,7 +898,7 @@ Error LongJmpPass::relax(BinaryFunction &Func, bool &Modified) {
       if (BC.isPPC64() && !BC.MIB->isCall(Inst) &&
           !BC.MIB->isConditionalBranch(Inst)) {
         auto LayoutBegin = Func.getLayout().block_begin();
-        auto LayoutEnd   = Func.getLayout().block_end();
+        auto LayoutEnd = Func.getLayout().block_end();
         if (LayoutBegin != LayoutEnd) {
           // Find InsertionPoint in layout order and look at what comes next.
           for (auto It = LayoutBegin; It != LayoutEnd; ++It) {

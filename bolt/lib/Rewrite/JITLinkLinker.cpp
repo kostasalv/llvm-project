@@ -278,15 +278,16 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       //   "0000ba05.plt_branch.2c8e7:13/1"
       //
       // These are local symbols in the original binary's .text section at their
-      // PLT thunk addresses. Resolve them directly by stripping the JITLink "/N"
-      // suffix and looking up the resulting name in BinaryData. The BOLT TOC
-      // equals the original TOC (both are .got+0x8000 and .got is not moved),
-      // so the PLT thunk's "ld r12, N(r2)" works correctly with BOLT's r2.
-      // The LongBranchNoTOC stub then bctr's into the thunk with r12 = thunk
-      // address, satisfying the ELFv2 calling convention.
+      // PLT thunk addresses. Resolve them directly by stripping the JITLink
+      // "/N" suffix and looking up the resulting name in BinaryData. The BOLT
+      // TOC equals the original TOC (both are .got+0x8000 and .got is not
+      // moved), so the PLT thunk's "ld r12, N(r2)" works correctly with BOLT's
+      // r2. The LongBranchNoTOC stub then bctr's into the thunk with r12 =
+      // thunk address, satisfying the ELFv2 calling convention.
       if (IsPPC64) {
         StringRef SN(SymName);
-        for (StringRef Marker : {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
+        for (StringRef Marker :
+             {StringRef(".plt_call."), StringRef(".plt_branch.")}) {
           if (!SN.contains(Marker))
             continue;
           // Strip the JITLink "/N" suffix (e.g. "...getenv@@GLIBC_2.17/1"
@@ -294,16 +295,16 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
           std::string StubSymName = SymName;
           if (auto Slash = SN.rfind('/'); Slash != StringRef::npos)
             StubSymName = SN.take_front(Slash).str();
-          LLVM_DEBUG(dbgs() << "BOLT PPC64: plt stub lookup: '"
-                            << StubSymName << "'\n");
+          LLVM_DEBUG(dbgs() << "BOLT PPC64: plt stub lookup: '" << StubSymName
+                            << "'\n");
           if (const BinaryData *I =
                   Linker.BC.getBinaryDataByName(StubSymName)) {
             uint64_t Address = I->isMoved() && !I->isJumpTable()
                                    ? I->getOutputAddress()
                                    : I->getAddress();
-            LLVM_DEBUG(dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
-                              << " -> plt-thunk 0x"
-                              << Twine::utohexstr(Address) << "\n");
+            LLVM_DEBUG(dbgs()
+                       << "BOLT-PPC64-LOOKUP: " << SymName << " -> plt-thunk 0x"
+                       << Twine::utohexstr(Address) << "\n");
             AllResults[Symbol.first] = orc::ExecutorSymbolDef(
                 orc::ExecutorAddr(Address), JITSymbolFlags());
             goto next_symbol;
@@ -356,8 +357,8 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       }
 
       LLVM_DEBUG(dbgs() << "Resolved to address 0x0\n");
-      LLVM_DEBUG(if (IsPPC64) dbgs()
-                 << "BOLT-PPC64-LOOKUP: " << SymName << " -> UNRESOLVED (0x0)\n");
+      LLVM_DEBUG(if (IsPPC64) dbgs() << "BOLT-PPC64-LOOKUP: " << SymName
+                                     << " -> UNRESOLVED (0x0)\n");
       AllResults[Symbol.first] =
           orc::ExecutorSymbolDef(orc::ExecutorAddr(0), JITSymbolFlags());
     next_symbol:;
@@ -372,7 +373,6 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
       auto Name =
           Symbol->hasName() ? (*Symbol->getName()).str() : std::string();
       Linker.Symtab.insert({Name, Info});
-
     }
 
     return Error::success();

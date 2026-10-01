@@ -610,9 +610,7 @@ public:
   ///
   /// Defaults to false; targets with conditional-return instructions (e.g.
   /// PPC's beqlr/bnelr/bdnzlr family) must override this.
-  virtual bool isConditionalReturn(const MCInst &Inst) const {
-    return false;
-  }
+  virtual bool isConditionalReturn(const MCInst &Inst) const { return false; }
 
   /// Returns the registers that are trusted at function entry.
   ///

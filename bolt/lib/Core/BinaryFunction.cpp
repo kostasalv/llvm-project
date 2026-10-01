@@ -2736,9 +2736,9 @@ void BinaryFunction::postProcessCFG() {
           if (!BC.MIB->isCall(Inst) || BC.MIB->isCallWithNOPSlot(Inst))
             continue;
           auto Next = std::next(It);
-          bool SlotFilled = Next != BB.end() &&
-                            (BC.MIB->isNoop(*Next) ||
-                             BC.MIB->isTOCRestoreAfterCall(*Next));
+          bool SlotFilled =
+              Next != BB.end() &&
+              (BC.MIB->isNoop(*Next) || BC.MIB->isTOCRestoreAfterCall(*Next));
           if (!SlotFilled)
             BC.MIB->ensureCallNOPSlot(Inst);
         }

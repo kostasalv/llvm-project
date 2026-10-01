@@ -119,8 +119,8 @@ bool PPCMCPlusBuilder::hasPCRelOperand(const MCInst &I) const {
 int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   switch (I.getOpcode()) {
   // Relative direct call/branch – target is operand #0 in MC (Imm/Expr)
-  case PPC::BL:           // 32-bit relative call
-  case PPC::BL8:          // 64-bit relative call
+  case PPC::BL:  // 32-bit relative call
+  case PPC::BL8: // 64-bit relative call
   case PPC::BL8_TLS:
   case PPC::BL8_TLS_:
   case PPC::BL8_NOP:
@@ -132,7 +132,7 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   case PPC::BL8_NOTOC_RM:
   case PPC::BL8_LDinto_toc:
   case PPC::BL8_LDinto_toc_RM:
-  case PPC::B:             // unconditional relative branch
+  case PPC::B: // unconditional relative branch
   // BDNZ/BDZ family (decrement CTR and branch if [not] zero) and their
   // link/branch-hint variants -- see the block comment on
   // getPCRelEncodingSize() below for why these share BC/BCL's 14-bit BD
@@ -158,7 +158,7 @@ int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   // Conditional relative branch: BO, BI, BD (target at operand 2)
   case PPC::BC:
   case PPC::BCL:
-  case PPC::gBC:  // bt/bf mnemonics (alias for BC with specific BO values)
+  case PPC::gBC: // bt/bf mnemonics (alias for BC with specific BO values)
   case PPC::gBCL:
   // BCC/BCCL: pred(imm), CR(reg), target(imm/expr) — target at operand 2
   case PPC::BCC:
@@ -375,8 +375,8 @@ void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
 
   const MCExpr *HST = MCSymbolRefExpr::create(Target, PPC::S_HIGHEST, *Ctx);
   const MCExpr *HER = MCSymbolRefExpr::create(Target, PPC::S_HIGHER, *Ctx);
-  const MCExpr *HI  = MCSymbolRefExpr::create(Target, PPC::S_HI, *Ctx);
-  const MCExpr *LO  = MCSymbolRefExpr::create(Target, PPC::S_LO, *Ctx);
+  const MCExpr *HI = MCSymbolRefExpr::create(Target, PPC::S_HI, *Ctx);
+  const MCExpr *LO = MCSymbolRefExpr::create(Target, PPC::S_LO, *Ctx);
 
   MCInst I;
 
@@ -433,10 +433,10 @@ void PPCMCPlusBuilder::createLongJmp(InstructionListType &Seq,
 }
 
 void PPCMCPlusBuilder::createLongJmpWithTOCRestore(InstructionListType &Seq,
-                                                    const MCSymbol *Target,
-                                                    MCContext *Ctx,
-                                                    uint64_t TOCBase,
-                                                    bool IsTailCall) {
+                                                   const MCSymbol *Target,
+                                                   MCContext *Ctx,
+                                                   uint64_t TOCBase,
+                                                   bool IsTailCall) {
   // PPC64 ELFv2: linker-generated PLT/branch-extension stubs (.plt_call.,
   // .plt_branch.) are the ORIGINAL binary's un-rewritten code.  Per the
   // ELFv2 ABI (Section 4.2.5.3, Procedure Linkage Table): "the caller has
@@ -576,9 +576,8 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
   if (PCRelOp < 0)
     return nullptr;
   // Use the PC-relative operand index unless the caller passed an explicit one.
-  unsigned EffectiveOp = (OpNum == 0 && (unsigned)PCRelOp != 0)
-                             ? (unsigned)PCRelOp
-                             : OpNum;
+  unsigned EffectiveOp =
+      (OpNum == 0 && (unsigned)PCRelOp != 0) ? (unsigned)PCRelOp : OpNum;
   if (EffectiveOp >= Inst.getNumOperands())
     return nullptr;
   const MCOperand &Op = Inst.getOperand(EffectiveOp);
@@ -701,7 +700,8 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   case PPC::BLA:   // absolute branch with link
   case PPC::BC:    // conditional branch (BC/BCL with explicit BO,BI fields)
   case PPC::BCL:   // conditional branch with link
-  case PPC::BCC:   // conditional branch using extended mnemonics (bt/bf/beq/bne...)
+  case PPC::BCC:   // conditional branch using extended mnemonics
+                   // (bt/bf/beq/bne...)
   case PPC::BCCA:  // conditional branch absolute (extended mnemonic)
   case PPC::BCCL:  // conditional branch with link (extended mnemonic)
   case PPC::BCCLA: // conditional branch with link absolute (extended mnemonic)
@@ -859,11 +859,11 @@ bool PPCMCPlusBuilder::isTerminator(const MCInst &Inst) const {
 
 bool PPCMCPlusBuilder::isConditionalBranch(const MCInst &I) const {
   switch (opc(I)) {
-  case PPC::BC:    // branch conditional (explicit BO,BI fields)
-  case PPC::BCL:   // branch conditional with link
-  case PPC::BCC:   // extended-mnemonic conditional branch (bt/bf/beq/bne/bgt...)
-  case PPC::BCCA:  // extended-mnemonic conditional branch absolute
-  case PPC::BCCL:  // extended-mnemonic conditional branch with link
+  case PPC::BC:   // branch conditional (explicit BO,BI fields)
+  case PPC::BCL:  // branch conditional with link
+  case PPC::BCC:  // extended-mnemonic conditional branch (bt/bf/beq/bne/bgt...)
+  case PPC::BCCA: // extended-mnemonic conditional branch absolute
+  case PPC::BCCL: // extended-mnemonic conditional branch with link
   case PPC::BCCLA: // extended-mnemonic conditional branch with link absolute
   case PPC::gBC:   // generic conditional branch (bt/bf with full BO field)
   case PPC::gBCL:  // generic conditional branch with link
@@ -1166,20 +1166,22 @@ IndirectBranchType PPCMCPlusBuilder::analyzeIndirectBranch(
 
 bool PPCMCPlusBuilder::isNoop(const MCInst &Inst) const {
   // PPC NOP can appear as two opcode forms:
-  // 1. PPC::NOP  - the dedicated NOP pseudo-instruction (decoded from 0x60000000)
+  // 1. PPC::NOP  - the dedicated NOP pseudo-instruction (decoded from
+  // 0x60000000)
   // 2. PPC::ORI r0, r0, 0 - the underlying encoding (emitted by createNoop)
   LLVM_DEBUG(dbgs() << "isNoop check: opcode=" << Inst.getOpcode()
-                    << " PPC::NOP=" << PPC::NOP
-                    << " PPC::ORI=" << PPC::ORI << "\n");
+                    << " PPC::NOP=" << PPC::NOP << " PPC::ORI=" << PPC::ORI
+                    << "\n");
   if (Inst.getOpcode() == PPC::NOP) {
     LLVM_DEBUG(dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
                       << " == PPC::NOP(" << PPC::NOP << ") -> TRUE\n");
     return true;
   }
-  bool oriMatch = Inst.getOpcode() == PPC::ORI && Inst.getOperand(0).isReg() &&
-         Inst.getOperand(0).getReg() == PPC::R0 && Inst.getOperand(1).isReg() &&
-         Inst.getOperand(1).getReg() == PPC::R0 && Inst.getOperand(2).isImm() &&
-         Inst.getOperand(2).getImm() == 0;
+  bool oriMatch =
+      Inst.getOpcode() == PPC::ORI && Inst.getOperand(0).isReg() &&
+      Inst.getOperand(0).getReg() == PPC::R0 && Inst.getOperand(1).isReg() &&
+      Inst.getOperand(1).getReg() == PPC::R0 && Inst.getOperand(2).isImm() &&
+      Inst.getOperand(2).getImm() == 0;
   LLVM_DEBUG(if (oriMatch) dbgs() << "PPC-ISNOOP: opcode=" << Inst.getOpcode()
                                   << " == ORI r0,r0,0 -> TRUE\n");
   return oriMatch;
@@ -1456,8 +1458,8 @@ using namespace llvm::ELF;
 ///    does -- yet extractFixupExpr() reports no symbol for it. Every immediate
 ///    of every address-materialization sequence carries such a specifier, which
 ///    made the whole specifier switch below unreachable.
-///  * It *asserts* on shapes it cannot handle rather than failing, and PPC fixup
-///    values do reach createRelocation() in such shapes:
+///  * It *asserts* on shapes it cannot handle rather than failing, and PPC
+///    fixup values do reach createRelocation() in such shapes:
 ///    replaceImmWithSymbolRef() wraps the symbol difference
 ///    `(.TOC. + 4 - .Ltmp0)` in an MCSpecifierExpr for the ELFv2 global-entry
 ///    TOC preamble. Failing lets us report the fixup as unhandled instead of
@@ -1650,8 +1652,8 @@ PPCMCPlusBuilder::createRelocation(const MCFixup &Fixup,
   LLVM_DEBUG({
     const MCFixupKindInfo FKI = MAB.getFixupKindInfo(Kind);
     dbgs() << "PPC createRelocation: unhandled fixup kind '" << FKI.Name
-           << "', size=" << FKI.TargetSize
-           << ", isPCRel=" << Fixup.isPCRel() << "\n";
+           << "', size=" << FKI.TargetSize << ", isPCRel=" << Fixup.isPCRel()
+           << "\n";
   });
   return std::nullopt;
 }
@@ -1737,9 +1739,9 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
   // logical oris/ori instructions which do NOT sign-extend operands.
   uint64_t Addr = GotSlotAddress;
   uint16_t Highest = (Addr >> 48) & 0xffff;
-  uint16_t Higher  = (Addr >> 32) & 0xffff;
-  uint16_t Lo  = Addr & 0xffff;
-  uint16_t Hi  = (Addr >> 16) & 0xffff;
+  uint16_t Higher = (Addr >> 32) & 0xffff;
+  uint16_t Lo = Addr & 0xffff;
+  uint16_t Hi = (Addr >> 16) & 0xffff;
 
   MCInst I;
 
@@ -1827,9 +1829,9 @@ void PPCMCPlusBuilder::buildCallStubGOTSlot(MCContext *Ctx,
 }
 
 void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
-                                              uint64_t ThunkAddress,
-                                              uint64_t OrigTOCBase,
-                                              std::vector<MCInst> &Out) const {
+                                             uint64_t ThunkAddress,
+                                             uint64_t OrigTOCBase,
+                                             std::vector<MCInst> &Out) const {
   Out.clear();
   // Helper lambda: materialize a 64-bit immediate into a GPR using the
   // lis/ori/rldicr/oris/ori sequence.
@@ -1837,36 +1839,41 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   // and do not sign-extend, so no carry from bit 15 is needed.
   auto mat64 = [&](unsigned Reg, uint64_t Val) {
     uint16_t Highest = (Val >> 48) & 0xffff;
-    uint16_t Higher  = (Val >> 32) & 0xffff;
-    uint16_t Lo  = Val & 0xffff;
-    uint16_t Hi  = (Val >> 16) & 0xffff;
+    uint16_t Higher = (Val >> 32) & 0xffff;
+    uint16_t Lo = Val & 0xffff;
+    uint16_t Hi = (Val >> 16) & 0xffff;
     MCInst I;
     // lis Reg, Highest
-    I = MCInst(); I.setOpcode(PPC::LIS8);
+    I = MCInst();
+    I.setOpcode(PPC::LIS8);
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createImm((int16_t)Highest));
     Out.push_back(I);
     // ori Reg, Reg, Higher
-    I = MCInst(); I.setOpcode(PPC::ORI8);
+    I = MCInst();
+    I.setOpcode(PPC::ORI8);
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createImm(Higher));
     Out.push_back(I);
     // rldicr Reg, Reg, 32, 31
-    I = MCInst(); I.setOpcode(PPC::RLDICR);
+    I = MCInst();
+    I.setOpcode(PPC::RLDICR);
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createImm(32));
     I.addOperand(MCOperand::createImm(31));
     Out.push_back(I);
     // oris Reg, Reg, Hi
-    I = MCInst(); I.setOpcode(PPC::ORIS8);
+    I = MCInst();
+    I.setOpcode(PPC::ORIS8);
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createImm(Hi));
     Out.push_back(I);
     // ori Reg, Reg, Lo
-    I = MCInst(); I.setOpcode(PPC::ORI8);
+    I = MCInst();
+    I.setOpcode(PPC::ORI8);
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createReg(Reg));
     I.addOperand(MCOperand::createImm(Lo));
@@ -1895,36 +1902,42 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   MCInst I;
 
   // mflr r0          ; save lr (so bctrl doesn't clobber caller's return addr)
-  I = MCInst(); I.setOpcode(PPC::MFLR8);
+  I = MCInst();
+  I.setOpcode(PPC::MFLR8);
   I.addOperand(MCOperand::createReg(PPC::X0));
   Out.push_back(I);
 
   // Allocate a 48-byte frame: std r1, -48(r1) + addi r1, r1, -48
   // (Use STD+ADDI8 instead of STDU to avoid STDU's complex memrix operand.)
   // std r1, -48(r1)  ; save back-chain
-  I = MCInst(); I.setOpcode(PPC::STD);
+  I = MCInst();
+  I.setOpcode(PPC::STD);
   I.addOperand(R(PPC::X1));
   I.addOperand(MCOperand::createImm(-48));
   I.addOperand(R(PPC::X1));
   Out.push_back(I);
 
   // addi r1, r1, -48 ; update stack pointer
-  I = MCInst(); I.setOpcode(PPC::ADDI8);
+  I = MCInst();
+  I.setOpcode(PPC::ADDI8);
   I.addOperand(R(PPC::X1));
   I.addOperand(R(PPC::X1));
   I.addOperand(MCOperand::createImm(-48));
   Out.push_back(I);
 
   // std r0, 64(r1)   ; save lr at old_r1+16 = new_r1+48+16 = new_r1+64
-  //                  ; (ELFv2: lr saved at caller_frame+16, which is new_r1+48+16)
-  I = MCInst(); I.setOpcode(PPC::STD);
+  //                  ; (ELFv2: lr saved at caller_frame+16, which is
+  //                  new_r1+48+16)
+  I = MCInst();
+  I.setOpcode(PPC::STD);
   I.addOperand(MCOperand::createReg(PPC::X0));
   I.addOperand(MCOperand::createImm(64));
   I.addOperand(R(PPC::X1));
   Out.push_back(I);
 
   // std r2, 32(r1)   ; save BOLT TOC at our private slot (thunk won't touch 32)
-  I = MCInst(); I.setOpcode(PPC::STD);
+  I = MCInst();
+  I.setOpcode(PPC::STD);
   I.addOperand(R(PPC::X2));
   I.addOperand(MCOperand::createImm(32));
   I.addOperand(R(PPC::X1));
@@ -1937,43 +1950,50 @@ void PPCMCPlusBuilder::buildCallStubTOCThunk(MCContext *Ctx,
   mat64(PPC::X12, ThunkAddress);
 
   // mtctr r12
-  I = MCInst(); I.setOpcode(PPC::MTCTR8);
+  I = MCInst();
+  I.setOpcode(PPC::MTCTR8);
   I.addOperand(MCOperand::createReg(PPC::X12));
   Out.push_back(I);
 
   // bctrl  ; call thunk with original r2; thunk does std r2,24(r1) (our slot),
   //        ; ld r12,N(r2), bctr to real fn; real fn returns here via blr
-  I = MCInst(); I.setOpcode(PPC::BCTRL8);
+  I = MCInst();
+  I.setOpcode(PPC::BCTRL8);
   Out.push_back(I);
 
   // ld r2, 32(r1)    ; restore BOLT TOC from our private save slot
-  I = MCInst(); I.setOpcode(PPC::LD);
+  I = MCInst();
+  I.setOpcode(PPC::LD);
   I.addOperand(R(PPC::X2));
   I.addOperand(MCOperand::createImm(32));
   I.addOperand(R(PPC::X1));
   Out.push_back(I);
 
   // ld r0, 64(r1)    ; reload saved lr
-  I = MCInst(); I.setOpcode(PPC::LD);
+  I = MCInst();
+  I.setOpcode(PPC::LD);
   I.addOperand(MCOperand::createReg(PPC::X0));
   I.addOperand(MCOperand::createImm(64));
   I.addOperand(R(PPC::X1));
   Out.push_back(I);
 
   // mtlr r0          ; restore lr
-  I = MCInst(); I.setOpcode(PPC::MTLR8);
+  I = MCInst();
+  I.setOpcode(PPC::MTLR8);
   I.addOperand(MCOperand::createReg(PPC::X0));
   Out.push_back(I);
 
   // addi r1, r1, 48  ; deallocate frame
-  I = MCInst(); I.setOpcode(PPC::ADDI8);
+  I = MCInst();
+  I.setOpcode(PPC::ADDI8);
   I.addOperand(R(PPC::X1));
   I.addOperand(R(PPC::X1));
   I.addOperand(MCOperand::createImm(48));
   Out.push_back(I);
 
   // blr
-  I = MCInst(); I.setOpcode(PPC::BLR8);
+  I = MCInst();
+  I.setOpcode(PPC::BLR8);
   Out.push_back(I);
 }
 

@@ -384,11 +384,9 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function,
   // mid-function (observed in MCFragmentC2, which has no local entry).
   // Preserve the function's own recorded offset instead of a constant.
   if (BC.isPPC64() && FF.isMainFragment()) {
-    const unsigned LEPOffsetVal =
-        Function.getPPC64LocalEntryOffset() ? 3u : 0u;
+    const unsigned LEPOffsetVal = Function.getPPC64LocalEntryOffset() ? 3u : 0u;
     const unsigned PPC64LEPOffset =
-        (LEPOffsetVal << ELF::STO_PPC64_LOCAL_BIT) &
-        ELF::STO_PPC64_LOCAL_MASK;
+        (LEPOffsetVal << ELF::STO_PPC64_LOCAL_BIT) & ELF::STO_PPC64_LOCAL_MASK;
     for (MCSymbol *Symbol : Function.getSymbols()) {
       auto *ELFSym = static_cast<MCSymbolELF *>(Symbol);
       unsigned Other = ELFSym->getOther();
