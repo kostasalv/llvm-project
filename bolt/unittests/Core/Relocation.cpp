@@ -12,6 +12,19 @@
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
+// On a ppc64 host the kernel header <asm/elf.h> defines all 113 R_PPC64_*
+// names as object-like macros, and <signal.h> reaches it through
+// asm/sigcontext.h -> asm/ptrace.h. gtest/gtest.h includes <signal.h> for its
+// death tests, and because gtest sorts after the llvm headers it re-defines
+// the macros that llvm/BinaryFormat/ELF.h had already cleared, so
+// ELF::R_PPC64_ADDR64 below would expand to ELF::38. PowerPC64.def opens with
+// the #undef block for exactly this reason; re-include it with a no-op
+// ELF_RELOC to run that block once more, after gtest. Reusing LLVM's own list
+// means it cannot fall behind the relocation table.
+#define ELF_RELOC(name, value)
+#include "llvm/BinaryFormat/ELFRelocs/PowerPC64.def"
+#undef ELF_RELOC
+
 using namespace llvm;
 using namespace bolt;
 
