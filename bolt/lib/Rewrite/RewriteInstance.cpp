@@ -3986,44 +3986,72 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
                 BD->getSectionName().ends_with(".plt")))) &&
              "BOLT symbol names of all non-section relocations must match up "
              "with symbol names referenced in the relocation");
-    }
-    if (IsSectionRelocation) {
-      ReferencedSymbol = BC->getOrCreateGlobalSymbol(SymbolAddress, "SYMBOLat");
+
+      if (IsSectionRelocation)
+        BC->markAmbiguousRelocations(*BD, Address);
+
+      ReferencedSymbol = BD->getSymbol();
+      Addend += (SymbolAddress - BD->getAddress());
+      SymbolAddress = BD->getAddress();
+      assert(Address == SymbolAddress + Addend);
     } else {
-      symbol_iterator It = Rel.getSymbol();
-      if (It == InputFile->symbol_end()) {
+      // These are mostly local data symbols but undefined symbols
+      // in relocation sections can get through here too, from .plt.
+      assert(
+          (IsAArch64 || BC->isRISCV() || IsSectionRelocation ||
+           BC->getSectionNameForAddress(SymbolAddress)->starts_with(".plt")) &&
+          "known symbols should not resolve to anonymous locals");
+
+      if (IsSectionRelocation) {
         ReferencedSymbol =
-            BC->registerNameAtAddress(NR.uniquify(SymbolName), SymbolAddress,
-                                      /*Size=*/0, /*Alignment=*/1, /*Flags=*/0);
+            BC->getOrCreateGlobalSymbol(SymbolAddress, "SYMBOLat");
       } else {
-        SymbolRef Symbol = *It;
-
-        uint64_t SymbolSize =
-            IsAArch64 ? 0 : ELFSymbolRef(Symbol).getSize(); // plain value
-        uint64_t SymbolAlignment = Symbol.getAlignment();   // plain value
-        uint32_t SymbolFlags = 0;
-
-        if (IsPPC64) {
-          if (auto FlagsOrErr = Symbol.getFlags())
-            SymbolFlags = *FlagsOrErr;
-          else
-            consumeError(FlagsOrErr.takeError());
+        // A relocation can name no symbol at all. Upstream reaches
+        // Rel.getSymbol() only on targets where that cannot happen; on PPC64 it
+        // can, so the iterator is checked before it is dereferenced.
+        symbol_iterator It = Rel.getSymbol();
+        if (It == InputFile->symbol_end()) {
+          ReferencedSymbol = BC->registerNameAtAddress(
+              NR.uniquify(SymbolName), SymbolAddress,
+              /*Size=*/0, /*Alignment=*/1, /*Flags=*/0);
         } else {
-          SymbolFlags = cantFail(Symbol.getFlags());
-        }
+          SymbolRef Symbol = *It;
+          const uint64_t SymbolSize =
+              IsAArch64 ? 0 : ELFSymbolRef(Symbol).getSize();
+          const uint64_t SymbolAlignment =
+              IsAArch64 ? 1 : Symbol.getAlignment();
 
-        std::string Name;
-        if (SymbolFlags & SymbolRef::SF_Global) {
-          Name = SymbolName;
-        } else {
-          if (StringRef(SymbolName)
-                  .starts_with(BC->AsmInfo->getInternalSymbolPrefix()))
-            Name = NR.uniquify("PG" + SymbolName);
-          else
-            Name = NR.uniquify(SymbolName);
+          // getFlags() is fatal upstream. On PPC64 a symbol coming out of a
+          // .plt or an opd entry can fail to report flags, so the error is
+          // consumed and the symbol is treated as having none.
+          uint32_t SymbolFlags = 0;
+          if (IsPPC64) {
+            if (auto FlagsOrErr = Symbol.getFlags())
+              SymbolFlags = *FlagsOrErr;
+            else
+              consumeError(FlagsOrErr.takeError());
+          } else {
+            SymbolFlags = cantFail(Symbol.getFlags());
+          }
+
+          std::string Name;
+          if (SymbolFlags & SymbolRef::SF_Global) {
+            Name = SymbolName;
+          } else {
+            if (StringRef(SymbolName)
+                    .starts_with(BC->AsmInfo->getInternalSymbolPrefix()))
+              Name = NR.uniquify("PG" + SymbolName);
+            else
+              Name = NR.uniquify(SymbolName);
+          }
+          ReferencedSymbol = BC->registerNameAtAddress(
+              Name, SymbolAddress, SymbolSize, SymbolAlignment, SymbolFlags);
         }
-        ReferencedSymbol = BC->registerNameAtAddress(
-            Name, SymbolAddress, SymbolSize, SymbolAlignment, SymbolFlags);
+      }
+
+      if (IsSectionRelocation) {
+        BinaryData *BD = BC->getBinaryDataByName(ReferencedSymbol->getName());
+        BC->markAmbiguousRelocations(*BD, Address);
       }
     }
   }
