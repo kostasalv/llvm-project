@@ -1348,6 +1348,32 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
           if (BitsAvailable == LongestJumpBits)
             continue;
 
+          // A returning call is not relaxed here. Everything below resolves the
+          // target to a basic block of this function, or -- for a non-simple
+          // function -- to a trampoline placed at its end. The target of a
+          // returning call is neither: it is another function, and a called
+          // function is never a CFG successor of the calling block. An
+          // out-of-range call is relaxed by ClusteredRelaxation::relaxCalls()
+          // with a thunk instead.
+          //
+          // Tail calls must be excluded from this check. isCall() here is
+          // MCPlusBuilder::isCall(), which is Analysis->isCall() ||
+          // isTailCall(), so a conditional tail call -- a branch opcode
+          // carrying a tail-call annotation -- is isCall() too, and its
+          // encoding is short: AArch64MCPlusBuilder reports 21 bits for Bcc and
+          // 16 for TBZ/TBNZ. Those are exactly what the non-simple arm below
+          // exists to relax, which AArch64/compact-code-model-nonsimple.s
+          // checks, so skipping them here regresses that test.
+          //
+          // With tail calls excluded, AArch64 is unaffected: BL and an
+          // unconditional tail call both report the full 28 bits and have
+          // already taken the exit above. PowerPC's 'bl' carries a 26-bit byte
+          // displacement (+/-32MB) and falls through to here instead, where
+          // without this check it reaches BB->getSuccessor() with a callee
+          // symbol that is not a successor.
+          if (MIB->isCall(Inst) && !MIB->isTailCall(Inst))
+            continue;
+
           const MCSymbol *TargetSymbol = MIB->getTargetSymbol(Inst);
 
           if (BF.isSimple()) {
