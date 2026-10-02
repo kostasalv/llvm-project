@@ -101,6 +101,27 @@ static bool mayNeedStub(const BinaryContext &BC, const MCInst &Inst) {
     BC.printInstruction(BC.errs(), Inst);
     exit(1);
   }
+  // A return is never a relaxable branch. It has no branch target, so there is
+  // nothing for a stub or a trampoline to redirect, and every caller below ends
+  // up asking for a target symbol that does not exist.
+  //
+  // This is not hypothetical on a target that reports a return as isBranch().
+  // PowerPC lists BLR, BLRL and BLR8 in isBranch() so that the CFG builder and
+  // this port's own recognition of the stubs it creates both work, and
+  // deliberately does not list them in isIndirectBranch() -- that omission is
+  // load-bearing, see the comments on PPCMCPlusBuilder::isBranch(). The
+  // combination is exactly what this predicate keys on, so a plain 'blr'
+  // reaches branch relaxation: getTargetSymbol() returns null, and
+  // relaxLocalBranches() then either asserts on a null CFG successor or reports
+  // the instruction as out of reach "for a 0-bit branch".
+  //
+  // AArch64 is unaffected: its RET is not marked isBranch, so it never reached
+  // here. On PowerPC the stub-insertion path is unaffected as well --
+  // needsStub() already bailed out on the null target symbol, just later and
+  // more quietly.
+  if (BC.MIB->isReturn(Inst))
+    return false;
+
   return (BC.MIB->isBranch(Inst) || BC.MIB->isCall(Inst)) &&
          !BC.MIB->isIndirectBranch(Inst) && !BC.MIB->isIndirectCall(Inst);
 }
