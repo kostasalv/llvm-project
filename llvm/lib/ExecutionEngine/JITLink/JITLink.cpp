@@ -429,10 +429,24 @@ Error makeTargetOutOfRangeError(const LinkGraph &G, const Block &B,
               << ": relocation target "
               << formatv("{0:x}", E.getTarget().getAddress() + E.getAddend())
               << " (";
-    if (E.getTarget().hasName())
+    if (E.getTarget().hasName()) {
       ErrStream << E.getTarget().getName();
-    else
+    } else {
+      // A nameless target leaves nothing in the message to identify it by, so
+      // say what can still be said about it. Which section it lives in is
+      // usually the whole answer: a linker-synthesised PLT stub or TOC entry
+      // sits in a table section of its own rather than among the graph's code,
+      // and that distinguishes a reference the linker put out of range from one
+      // that was already too far. Named targets are left exactly as they were,
+      // since the name already identifies them.
       ErrStream << "<anonymous symbol>";
+      if (E.getTarget().isDefined())
+        ErrStream << " in section " << E.getTarget().getSection().getName();
+      else if (E.getTarget().isAbsolute())
+        ErrStream << ", absolute";
+      else
+        ErrStream << ", external";
+    }
     if (E.getAddend()) {
       // Target address includes non-zero added, so break down the arithmetic.
       ErrStream << formatv(":{0:x}", E.getTarget().getAddress()) << " + "

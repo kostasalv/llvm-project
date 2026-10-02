@@ -62,4 +62,11 @@ large_function:
 # CHECK-NEXT: [[ADDR1]]: {{.*}} mov x0, #0x1 // =1
 # CHECK-NEXT: [[ADDR2]]: {{.*}} ret
 
-# BEYOND-128MB: BOLT-ERROR: JITLink failed: In graph in-memory object file, section .text: relocation target {{0x[0-9a-f]+}} (<anonymous symbol>) is out of range of Branch26PCRel fixup at address {{0x[0-9a-f]+}}
+# The target of this reference has no symbol name, so the section it lives in is
+# the only thing that identifies it -- and naming it is what distinguishes the
+# two causes this error can have. Here it is .text.cold, which says the branch
+# is a hot-to-cold edge left too far apart by the split, not a reference to a
+# linker-synthesised stub in a table section. Addresses stay wildcarded because
+# they vary; the section name does not, since -split-functions makes exactly two
+# fragments and getCodeSectionName() names the cold one .text.cold.
+# BEYOND-128MB: BOLT-ERROR: JITLink failed: In graph in-memory object file, section .text: relocation target {{0x[0-9a-f]+}} (<anonymous symbol> in section .text.cold) is out of range of Branch26PCRel fixup at address {{0x[0-9a-f]+}}
