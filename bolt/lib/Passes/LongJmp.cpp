@@ -1378,8 +1378,23 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
 
           if (BF.isSimple()) {
             BinaryBasicBlock *TargetBB = BB->getSuccessor(TargetSymbol);
-            assert(TargetBB &&
-                   "Basic block target expected for conditional branch.");
+            if (!TargetBB) {
+              // Report instead of asserting. The assertion that used to stand
+              // here printed neither the instruction nor the function, so a
+              // failure gave nothing to work from; and in an assertions-off
+              // build the next statement dereferences the null instead. The
+              // non-simple arm below already reports its own failure this way,
+              // and the caller treats false as "fatal, already reported".
+              auto L = BC.scopeLock();
+              BC.errs() << "BOLT-ERROR: no CFG successor for the target of a "
+                           "relaxable branch in "
+                        << BF << ": target symbol "
+                        << (TargetSymbol ? TargetSymbol->getName()
+                                         : StringRef("<none>"))
+                        << '\n';
+              BC.printInstruction(BC.errs(), Inst);
+              return false;
+            }
 
             // Check if the relaxation is needed.
             if (TargetBB->getFragmentNum() == FF.getFragmentNum() &&
