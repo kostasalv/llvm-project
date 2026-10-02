@@ -1379,6 +1379,67 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
           if (BF.isSimple()) {
             BinaryBasicBlock *TargetBB = BB->getSuccessor(TargetSymbol);
             if (!TargetBB) {
+              // The quick-path invariant documented at the top of this function
+              // -- "all branch targets are basic blocks of the function itself"
+              // -- does not hold here. It can fail in two ways, and they need
+              // opposite treatment, so decide which one this is rather than
+              // failing on both:
+              //
+              //   another function: the branch leaves BF while BF is still
+              //     marked simple. Skipped, for the reasons below.
+              //   in-function, not a successor: the target IS a block of this
+              //     function, so the CFG is missing an edge. That is a real
+              //     defect in CFG construction, which this pass must not paper
+              //     over, so it stays fatal.
+              //
+              // Measured on PowerPC with a production llc: the first case
+              // occurs, the second does not. The branch was an unconditional
+              // 'b' to the local entry point of a static function, from a block
+              // with 0 successors -- the CFG shape of a tail call, but carrying
+              // no tail-call annotation.
+              if (TargetSymbol && !BF.getBasicBlockForLabel(TargetSymbol)) {
+                // Every judgement this pass makes is in fragment-local *output*
+                // addresses -- BB->getOutputStartAddress(), and the
+                // isBlockInRange() above -- and a target outside the function
+                // has no such address. So the pass cannot tell whether this
+                // branch needs relaxing, and must not guess. The range check
+                // below never runs for such a branch anyway: it sits after
+                // target resolution, so a null TargetBB fails before any
+                // distance is computed. On the PowerPC case the branch spanned
+                // 3240 bytes against the 26-bit +/-32MB reach of 'b' -- in
+                // range by four orders of magnitude, and never asked.
+                //
+                // Cross-function reach is the job of the stub and thunk
+                // machinery -- needsStub()/relaxStub(), and
+                // ClusteredRelaxation::relaxCalls() for calls -- which runs
+                // with real addresses.
+                //
+                // Skipping cannot silently emit an unreachable branch: an
+                // out-of-range direct branch is caught at emission.
+                // PPCAsmBackend reports "branch target out of range" for
+                // fixup_ppc_br24, and AArch64AsmBackend checks the same way.
+                //
+                // Nothing is given up on PowerPC here. A trampoline, which is
+                // how the non-simple arm below handles this shape, widens reach
+                // only by routing a narrow branch through a wide one: on
+                // AArch64, a 21-bit conditional tail call through a 28-bit 'b'.
+                // This instruction is already an unconditional 'b', the widest
+                // direct branch PowerPC has, so getUncondBranchEncodingSize()
+                // is 26 and equals BitsAvailable; routing it through another
+                // 'b' gains nothing. For a *narrow* branch out of a simple
+                // function a trampoline would widen the reach; that case is
+                // left alone rather than guessed at, since it fails today too
+                // and no measurement of it exists.
+                LLVM_DEBUG({
+                  dbgs() << "BOLT-DEBUG: relaxLocalBranches: not relaxing a "
+                            "branch out of "
+                         << BF << " to " << TargetSymbol->getName()
+                         << "; a target outside the function has no "
+                            "fragment-local address to measure\n";
+                });
+                continue;
+              }
+
               // Report instead of asserting. The assertion that used to stand
               // here printed neither the instruction nor the function, so a
               // failure gave nothing to work from; and in an assertions-off
@@ -1386,27 +1447,8 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
               // non-simple arm below already reports its own failure this way,
               // and the caller treats false as "fatal, already reported".
               //
-              // Say which way the quick-path invariant documented at the top of
-              // this function -- "all branch targets are basic blocks of the
-              // function itself" -- is being violated, because the two ways
-              // need opposite fixes and the symbol name alone does not
-              // distinguish them:
-              //
-              //   in-function, not a successor: the target IS a block of this
-              //     function, so the CFG is missing an edge. The repair belongs
-              //     in CFG construction, and this pass should look the target up
-              //     function-wide rather than per-block.
-              //   another function: the branch genuinely leaves BF while BF is
-              //     still marked simple. Relaxing it needs a trampoline, as the
-              //     non-simple arm below already does for exactly this shape.
-              //
               // Printed as data, with the block's real successor list, so the
               // next step is read off the log instead of inferred.
-              BinaryBasicBlock *InFunc =
-                  TargetSymbol ? BF.getBasicBlockForLabel(TargetSymbol)
-                               : nullptr;
-              const BinaryFunction *TargetFunc =
-                  TargetSymbol ? BC.getFunctionForSymbol(TargetSymbol) : nullptr;
               auto L = BC.scopeLock();
               BC.errs() << "BOLT-ERROR: no CFG successor for the target of a "
                            "relaxable branch in "
@@ -1415,20 +1457,18 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
                                          : StringRef("<none>"))
                         << '\n';
               BC.printInstruction(BC.errs(), Inst);
-              BC.errs() << "BOLT-INFO: in block " << BB->getName() << ", which "
-                        << "has " << BB->succ_size() << " successor(s):";
+              BC.errs() << "BOLT-INFO: in block " << BB->getName()
+                        << ", which has " << BB->succ_size()
+                        << " successor(s):";
               for (const BinaryBasicBlock *Succ : BB->successors())
                 BC.errs() << ' ' << Succ->getName();
-              BC.errs() << "\nBOLT-INFO: the target is "
-                        << (InFunc ? "a block of this function that is NOT a "
-                                     "successor of this block -- missing CFG "
-                                     "edge"
-                                   : "not a block of this function")
+              BC.errs() << '\n'
+                        << "BOLT-INFO: "
+                        << (TargetSymbol
+                                ? "the target is a block of this function, so "
+                                  "the CFG is missing an edge to it"
+                                : "the branch has no target symbol at all")
                         << '\n';
-              if (TargetFunc)
-                BC.errs() << "BOLT-INFO: the target is the entry of function "
-                          << *TargetFunc << ", so this branch leaves "
-                          << "a function still marked simple\n";
               return false;
             }
 
