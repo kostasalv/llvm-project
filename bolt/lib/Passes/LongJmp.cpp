@@ -1385,6 +1385,28 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
               // build the next statement dereferences the null instead. The
               // non-simple arm below already reports its own failure this way,
               // and the caller treats false as "fatal, already reported".
+              //
+              // Say which way the quick-path invariant documented at the top of
+              // this function -- "all branch targets are basic blocks of the
+              // function itself" -- is being violated, because the two ways
+              // need opposite fixes and the symbol name alone does not
+              // distinguish them:
+              //
+              //   in-function, not a successor: the target IS a block of this
+              //     function, so the CFG is missing an edge. The repair belongs
+              //     in CFG construction, and this pass should look the target up
+              //     function-wide rather than per-block.
+              //   another function: the branch genuinely leaves BF while BF is
+              //     still marked simple. Relaxing it needs a trampoline, as the
+              //     non-simple arm below already does for exactly this shape.
+              //
+              // Printed as data, with the block's real successor list, so the
+              // next step is read off the log instead of inferred.
+              BinaryBasicBlock *InFunc =
+                  TargetSymbol ? BF.getBasicBlockForLabel(TargetSymbol)
+                               : nullptr;
+              const BinaryFunction *TargetFunc =
+                  TargetSymbol ? BC.getFunctionForSymbol(TargetSymbol) : nullptr;
               auto L = BC.scopeLock();
               BC.errs() << "BOLT-ERROR: no CFG successor for the target of a "
                            "relaxable branch in "
@@ -1393,6 +1415,20 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
                                          : StringRef("<none>"))
                         << '\n';
               BC.printInstruction(BC.errs(), Inst);
+              BC.errs() << "BOLT-INFO: in block " << BB->getName() << ", which "
+                        << "has " << BB->succ_size() << " successor(s):";
+              for (const BinaryBasicBlock *Succ : BB->successors())
+                BC.errs() << ' ' << Succ->getName();
+              BC.errs() << "\nBOLT-INFO: the target is "
+                        << (InFunc ? "a block of this function that is NOT a "
+                                     "successor of this block -- missing CFG "
+                                     "edge"
+                                   : "not a block of this function")
+                        << '\n';
+              if (TargetFunc)
+                BC.errs() << "BOLT-INFO: the target is the entry of function "
+                          << *TargetFunc << ", so this branch leaves "
+                          << "a function still marked simple\n";
               return false;
             }
 
