@@ -1152,6 +1152,12 @@ private:
   size_t NumRelaxedBranches = 0;
   size_t NumBranchThunks = 0;
   size_t NumBranchThunksReused = 0;
+
+  /// Collected calls that relaxCalls() then left alone because
+  /// getOrCreateBranchThunkChain() judged them already in range. These are
+  /// counted separately because they are the one way a reference can survive
+  /// collection and still reach the linker as an unrelaxed branch.
+  size_t NumCallsLeftInRange = 0;
 };
 } // namespace
 
@@ -1350,6 +1356,13 @@ void ClusteredRelaxation::printStats() const {
     BC.outs() << "BOLT-INFO: relaxed " << NumLongThunkCalls
               << " calls with long thunks\n";
 
+  // Printed even when zero, unlike the counters around it. A collected call
+  // that is left unrelaxed reaches the linker as a plain branch, so a zero here
+  // is the result that rules the case out -- a suppressed zero would be
+  // indistinguishable from the counter never having been reached.
+  BC.outs() << "BOLT-INFO: left " << NumCallsLeftInRange
+            << " collected call(s) unrelaxed as already in range\n";
+
   if (NumShortThunks)
     BC.outs() << "BOLT-INFO: " << NumShortThunks << " short thunks created\n";
 
@@ -1466,8 +1479,10 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
               dbgs() << "LongJmp: collect: widest intra-cluster reference so "
                         "far: "
                      << Distance << " bytes, cluster " << Source.Cluster
-                     << ", from " << BF->getPrintName() << " to "
-                     << TargetSymbol->getName()
+                     << ", from " << BF->getPrintName() << " at layout offset "
+                     << "0x" << Twine::utohexstr(SourceOffset) << " to "
+                     << TargetSymbol->getName() << " at 0x"
+                     << Twine::utohexstr(Target.Offset)
                      << " -- accepted without a range test\n";
             }
           });
@@ -1765,8 +1780,27 @@ void ClusteredRelaxation::relaxCalls() {
       if (const MCSymbol *Target =
               getOrCreateBranchThunkChain(Call, opts::MaxThunkChainLength)) {
         // Skip already in-range calls that do not need relaxation.
-        if (Target == Call.TargetSymbol)
+        if (Target == Call.TargetSymbol) {
+          // The in-range verdict comes from isWithinClusterRange(), which
+          // compares estimated layout offsets. A target the linker will place
+          // outside the laid-out code -- a synthesized stub table entry, say --
+          // has no offset that test can see, so report these rather than let
+          // them leave the pass silently.
+          ++NumCallsLeftInRange;
+          LLVM_DEBUG({
+            const uint64_t Distance =
+                Call.SourceOffset <= Call.TargetOffset
+                    ? Call.TargetOffset - Call.SourceOffset
+                    : Call.SourceOffset - Call.TargetOffset;
+            dbgs() << "LongJmp: relax: left in range: call at layout offset 0x"
+                   << Twine::utohexstr(Call.SourceOffset) << " to "
+                   << Call.TargetSymbol->getName() << " at 0x"
+                   << Twine::utohexstr(Call.TargetOffset) << ", cluster "
+                   << Call.SourceCluster << " -> " << Call.TargetCluster
+                   << ", distance " << Distance << " bytes\n";
+          });
           continue;
+        }
         BC.MIB->replaceBranchTarget(*Call.Inst, Target, BC.Ctx.get());
         ++NumShortThunkCalls;
         continue;
