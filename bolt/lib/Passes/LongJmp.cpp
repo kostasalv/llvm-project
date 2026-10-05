@@ -1996,6 +1996,20 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
             const uint64_t Distance = Source.Offset <= Target.Offset
                                           ? Target.Offset - Source.Offset
                                           : Source.Offset - Target.Offset;
+            // Report every same-cluster reference, not only each new widest
+            // one. The widest-so-far line answers "how far do these reach",
+            // but it cannot answer "is a given reference among them", and the
+            // latter is what attributing a specific failing fixup needs. The
+            // count of these lines must equal the two aggregate counters
+            // reported below, which is the cross-check that this is complete.
+            dbgs() << "LongJmp: collect: intra-cluster "
+                   << (IsCall ? "call" : "branch") << " in "
+                   << BF->getPrintName() << " at layout offset 0x"
+                   << Twine::utohexstr(SourceOffset) << " to "
+                   << TargetSymbol->getName() << " at 0x"
+                   << Twine::utohexstr(Target.Offset) << ", cluster "
+                   << Source.Cluster << ", distance " << Distance
+                   << " bytes -- accepted without a range test\n";
             if (Distance > MaxIntraClusterDistance) {
               MaxIntraClusterDistance = Distance;
               dbgs() << "LongJmp: collect: widest intra-cluster reference so "
