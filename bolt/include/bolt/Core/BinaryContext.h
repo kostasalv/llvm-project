@@ -1669,8 +1669,7 @@ public:
   std::unique_ptr<MCStreamer>
   createStreamer(llvm::raw_pwrite_stream &OS) const {
     MCCodeEmitter *MCE = TheTarget->createMCCodeEmitter(*MII, *Ctx);
-    MCAsmBackend *MAB =
-        TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
+    MCAsmBackend *MAB = TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
     std::unique_ptr<MCObjectWriter> OW = MAB->createObjectWriter(OS);
     std::unique_ptr<MCStreamer> Streamer(TheTarget->createMCObjectStreamer(
         *TheTriple, *Ctx, std::unique_ptr<MCAsmBackend>(MAB), std::move(OW),

@@ -2965,8 +2965,7 @@ BinaryContext::calculateEmittedSize(BinaryFunction &BF, bool FixBranches) {
   // Create local MC context to isolate the effect of ephemeral code emission.
   IndependentCodeEmitter MCEInstance = createIndependentMCCodeEmitter();
   MCContext *LocalCtx = MCEInstance.LocalCtx.get();
-  MCAsmBackend *MAB =
-      TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
+  MCAsmBackend *MAB = TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
 
   SmallString<256> Code;
   raw_svector_ostream VecOS(Code);
