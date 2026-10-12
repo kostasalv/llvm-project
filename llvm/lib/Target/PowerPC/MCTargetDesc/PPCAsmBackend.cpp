@@ -58,11 +58,10 @@ static uint64_t adjustFixupValue(MCContext &Ctx, const MCFixup &Fixup,
 
     // Low two bits are not encoded.
     if (!isIntN(Bits + 2, Value)) {
-      Ctx.reportError(Fixup.getLoc(), "branch target out of range (" +
-                                          Twine(SVal) + " not between " +
-                                          Twine(minIntN(Bits) * 4) + " and " +
-                                          Twine(maxIntN(Bits) * 4) + ")" +
-                                          describeBranch());
+      Ctx.reportError(Fixup.getLoc(),
+                      "branch target out of range (" + Twine(SVal) +
+                          " not between " + Twine(minIntN(Bits) * 4) + " and " +
+                          Twine(maxIntN(Bits) * 4) + ")" + describeBranch());
     }
   };
 
