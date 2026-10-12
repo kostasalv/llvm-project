@@ -56,6 +56,7 @@ hot:
 
 ## Check the number of thunks created in other modes.
 # CHECK-BOLT: BOLT-INFO: relaxed 4 calls with short thunks
+# CHECK-BOLT: BOLT-INFO: left 5 collected call(s) unrelaxed as already in range
 # CHECK-BOLT: BOLT-INFO: 3 short thunks created
 # CHECK-BOLT: BOLT-INFO: 1 short thunks reused
 
