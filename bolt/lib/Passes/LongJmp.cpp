@@ -1421,11 +1421,12 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
     for (BinaryBasicBlock &BB : *BF) {
       auto SourceIt = BBLayout.find(&BB);
       if (SourceIt == BBLayout.end()) {
-        LLVM_DEBUG(++NumUnmappedBlocks;
-                   dbgs() << "LongJmp: collect: block " << BB.getName()
-                          << " of " << BF->getPrintName()
-                          << " has no layout position; its references cannot be "
-                             "relaxed\n");
+        LLVM_DEBUG(
+            ++NumUnmappedBlocks;
+            dbgs() << "LongJmp: collect: block " << BB.getName() << " of "
+                   << BF->getPrintName()
+                   << " has no layout position; its references cannot be "
+                      "relaxed\n");
         continue;
       }
       const Position Source = SourceIt->second;
