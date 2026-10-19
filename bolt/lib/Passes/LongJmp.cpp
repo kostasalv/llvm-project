@@ -1913,20 +1913,6 @@ void ClusteredRelaxation::printStats() const {
 }
 
 void ClusteredRelaxation::collectOutOfRangeReferences() {
-
-  // These counters exist only in debug builds:
-  // Count references that are not relaxed. In case
-  // these references cannot reach their target use here the metrics
-  // for diagnostics. Without these metrics the failures
-  // appear much later as assembler or JITLink out-of-range
-  // which cannot say which of the filters passed through silently.
-  [[maybe_unused]] uint64_t NumSkippedFunctions = 0;
-  [[maybe_unused]] uint64_t NumUnmappedBlocks = 0;
-  [[maybe_unused]] uint64_t NumNullTargetCalls = 0;
-  [[maybe_unused]] uint64_t NumNullTargetBranches = 0;
-  [[maybe_unused]] uint64_t NumIntraClusterCalls = 0;
-  [[maybe_unused]] uint64_t NumIntraClusterBranches = 0;
-  [[maybe_unused]] uint64_t MaxIntraClusterDistance = 0;
   CallsByDistance.resize(Clusters.size());
 
   // A reference that leaves this function without being recorded is never
