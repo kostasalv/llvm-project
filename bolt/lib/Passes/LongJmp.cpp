@@ -1930,6 +1930,9 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
   // test. Record the widest one so the assumption can be checked against the
   // target's real branch reach instead of taken on trust.
   [[maybe_unused]] uint64_t MaxIntraClusterDistance = 0;
+  // Test-branch measurement: instructions that are both a call and an
+  // unconditional branch (tail calls), which take the branch path below.
+  [[maybe_unused]] uint64_t NumCallAndUncond = 0;
 
   // Walk all instructions once and collect both branches and calls.
   for (BinaryFunction *BF : OutputFunctions) {
@@ -1960,6 +1963,10 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
         const bool IsUncondBranch = BC.MIB->isUnconditionalBranch(Inst);
         if (!IsCall && !IsUncondBranch)
           continue;
+        LLVM_DEBUG({
+          if (IsCall && IsUncondBranch)
+            ++NumCallAndUncond;
+        });
 
         const MCSymbol *TargetSymbol = BC.MIB->getTargetSymbol(Inst);
         if (!TargetSymbol) {
@@ -2049,6 +2056,15 @@ void ClusteredRelaxation::collectOutOfRangeReferences() {
            << "LongJmp: collect:   widest intra-cluster reference: "
            << MaxIntraClusterDistance
            << " bytes; compare against the target's branch reach\n";
+    uint64_t NumCallsByDistance = 0;
+    for (const SmallVectorImpl<OutOfRangeRef> &Calls : CallsByDistance)
+      NumCallsByDistance += Calls.size();
+    dbgs() << "LongJmp: lists: OutOfLayoutCalls=" << OutOfLayoutCalls.size()
+           << " CallsByDistance[0]="
+           << (CallsByDistance.empty() ? 0 : CallsByDistance[0].size())
+           << " CallsByDistanceTotal=" << NumCallsByDistance
+           << " Branches=" << Branches.size()
+           << " CallAndUncond=" << NumCallAndUncond << '\n';
   });
 }
 
