@@ -8,6 +8,8 @@
 # RUN:   --defsym PAST=1 %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PAST
 # RUN: llvm-mc -triple powerpc64le-unknown-unknown -filetype=obj \
 # RUN:   --defsym EXTERNAL=1 %s | llvm-readobj -r - | FileCheck %s --check-prefix=EXT
+# RUN: llvm-mc -triple powerpc64le-unknown-unknown -filetype=obj \
+# RUN:   --defsym NOTOC=1 %s | llvm-readobj -r - | FileCheck %s --check-prefix=NOTOC
 
 ## The displacement of b and bl is limited by the width of its field, which is
 ## encoded without the two low bits: 24 bits give -32 MiB to 32 MiB - 4. The
@@ -78,8 +80,26 @@ near_target:
     blr
 .endif
 
+.ifdef NOTOC
+## A @notoc branch to a label in the same section is left to the linker even
+## when the displacement is known to be out of range, so the assembler must not
+## diagnose it. Both directions are further than a b or bl can reach.
+##
+##   offset 0x0         bl to 0x2000008    forward by 32 MiB + 8
+##   offset 0x2000004   bl to 0x0          backward by 32 MiB + 4
+notoc_bwd_target:
+    bl notoc_fwd_target@notoc
+    .space 0x2000000
+    bl notoc_bwd_target@notoc
+notoc_fwd_target:
+    blr
+.endif
+
 # EXT:      R_PPC64_REL24 external_func 0x0
 # EXT-NEXT: R_PPC64_REL24_NOTOC external_func 0x0
 # EXT-NEXT: R_PPC64_REL24_NOTOC .text 0x{{[0-9A-F]+}}
 # EXT-NEXT: R_PPC64_REL14 external_label 0x0
 # EXT-NEXT: R_PPC64_REL24 .other 0x0
+
+# NOTOC:      R_PPC64_REL24_NOTOC .text 0x2000008
+# NOTOC-NEXT: R_PPC64_REL24_NOTOC .text 0x0
