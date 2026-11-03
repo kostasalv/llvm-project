@@ -1389,7 +1389,8 @@ Error BinaryFunction::disassemble() {
     }
 
     // PPC64: the global entry TOC setup depends on the function's address.
-    if (BC.isPPC64() && BC.PPC64TOCBase && Offset < 8)
+    if (BC.isPPC64() && BC.PPC64TOCBase && Offset < 8 &&
+        FunctionData.size() >= 8)
       MIB->symbolizeTOCSetup(Instruction, FunctionData.slice(0, 8), Offset,
                              getAddress(), BC.PPC64TOCBase, getSymbol(),
                              BC.TheTriple->isLittleEndian(), BC.Ctx.get());
