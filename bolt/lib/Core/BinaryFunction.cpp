@@ -1388,6 +1388,12 @@ Error BinaryFunction::disassemble() {
       break;
     }
 
+    // PPC64: the global entry TOC setup depends on the function's address.
+    if (BC.isPPC64() && BC.PPC64TOCBase && Offset < 8)
+      MIB->symbolizeTOCSetup(Instruction, FunctionData.slice(0, 8), Offset,
+                             getAddress(), BC.PPC64TOCBase, getSymbol(),
+                             BC.TheTriple->isLittleEndian(), BC.Ctx.get());
+
     // PPC64: track terminator instructions (blr, bctr, unconditional branch)
     if (BC.isPPC64() && (MIB->isReturn(Instruction) ||
                          MIB->isUnconditionalBranch(Instruction))) {

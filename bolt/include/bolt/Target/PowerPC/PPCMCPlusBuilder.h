@@ -83,6 +83,11 @@ public:
 
   bool isTOCRestoreAfterCall(const MCInst &I) const override;
 
+  bool symbolizeTOCSetup(MCInst &Inst, ArrayRef<uint8_t> Code, uint64_t Offset,
+                         uint64_t FuncAddr, uint64_t TOCBase,
+                         const MCSymbol *FuncSym, bool IsLittleEndian,
+                         MCContext *Ctx) const override;
+
   /// Return true if \p Instruction is a bctr that dispatches a PIC jump table:
   ///   lwax  rDst, rBase, rIndex  (load signed 32-bit table entry)
   ///   ...

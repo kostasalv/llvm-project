@@ -1322,6 +1322,18 @@ public:
     return false;
   }
 
+  /// PPC64 ELFv2: if \p Inst at \p Offset in the function is half of the
+  /// global entry TOC setup (addis r2,r12,X / addi r2,r2,Y) that computes
+  /// \p TOCBase - \p FuncAddr, replace its immediate by an expression that
+  /// is evaluated again for the function's new address. \p Code holds the
+  /// function's bytes. Return true if the instruction was changed.
+  virtual bool symbolizeTOCSetup(MCInst &Inst, ArrayRef<uint8_t> Code,
+                                 uint64_t Offset, uint64_t FuncAddr,
+                                 uint64_t TOCBase, const MCSymbol *FuncSym,
+                                 bool IsLittleEndian, MCContext *Ctx) const {
+    return false;
+  }
+
   // Replace Register in Inst with Imm. Returns true if successful
   virtual bool replaceRegWithImm(MCInst &Inst, unsigned Register,
                                  int64_t Imm) const {

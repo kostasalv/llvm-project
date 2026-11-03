@@ -27,6 +27,7 @@
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/raw_ostream.h"
 // #include "MCTargetDesc/PPCMCTargetDesc.h"
 #include <optional>
@@ -58,6 +59,57 @@ void PPCMCPlusBuilder::createPushRegisters(MCInst &Inst1, MCInst &Inst2,
   Inst1.addOperand(MCOperand::createReg(PPC::R0));
   Inst1.addOperand(MCOperand::createImm(0));
   Inst2 = Inst1;
+}
+
+// The ELFv2 global entry point sets r2 from r12, the function's own address:
+//   addis r2, r12, (.TOC. - func)@ha
+//   addi  r2, r2,  (.TOC. - func)@l
+// The linker fills both immediates in through R_PPC64_REL16_HA/LO, which BOLT
+// does not keep. A function that moves would keep the old immediates and get a
+// TOC pointer that is off by the distance it moved. Recognise the pair from
+// its bytes, and only when it really computes TOCBase - FuncAddr, and give the
+// immediates back as expressions so the assembler emits the relocations again.
+bool PPCMCPlusBuilder::symbolizeTOCSetup(MCInst &Inst, ArrayRef<uint8_t> Code,
+                                         uint64_t Offset, uint64_t FuncAddr,
+                                         uint64_t TOCBase,
+                                         const MCSymbol *FuncSym,
+                                         bool IsLittleEndian,
+                                         MCContext *Ctx) const {
+  if ((Offset != 0 && Offset != 4) || Code.size() < 8 || !TOCBase)
+    return false;
+
+  auto Word = [&](size_t At) {
+    return IsLittleEndian ? support::endian::read32le(Code.data() + At)
+                          : support::endian::read32be(Code.data() + At);
+  };
+  const uint32_t W0 = Word(0), W1 = Word(4);
+  constexpr uint32_t AddisR2R12 = 0x3c4c0000; // addis r2, r12, imm
+  constexpr uint32_t AddiR2R2 = 0x38420000;   // addi  r2, r2,  imm
+  if ((W0 & 0xffff0000) != AddisR2R12 || (W1 & 0xffff0000) != AddiR2R2)
+    return false;
+
+  const int64_t Hi = static_cast<int16_t>(W0 & 0xffff);
+  const int64_t Lo = static_cast<int16_t>(W1 & 0xffff);
+  if ((Hi << 16) + Lo != static_cast<int64_t>(TOCBase - FuncAddr))
+    return false;
+
+  uint16_t Spec;
+  if (Offset == 0 &&
+      (Inst.getOpcode() == PPC::ADDIS || Inst.getOpcode() == PPC::ADDIS8))
+    Spec = PPC::S_HA;
+  else if (Offset == 4 &&
+           (Inst.getOpcode() == PPC::ADDI || Inst.getOpcode() == PPC::ADDI8))
+    Spec = PPC::S_LO;
+  else
+    return false;
+
+  // .TOC. - func, with the @ha / @l specifier applied on top.
+  const MCExpr *Delta = MCBinaryExpr::createSub(
+      MCSymbolRefExpr::create(Ctx->getOrCreateSymbol(".TOC."), *Ctx),
+      MCSymbolRefExpr::create(FuncSym, *Ctx), *Ctx);
+  Inst.getOperand(Inst.getNumOperands() - 1) =
+      MCOperand::createExpr(MCSpecifierExpr::create(Delta, Spec, *Ctx));
+  return true;
 }
 
 bool PPCMCPlusBuilder::shouldRecordCodeRelocation(unsigned Type) const {

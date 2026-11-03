@@ -221,6 +221,14 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
         continue;
       }
 
+      // PPC64: the TOC setup at a function's entry refers to .TOC., which
+      // JITLink only defines itself when it builds a TOC section.
+      if (SymName == ".TOC." && Linker.BC.PPC64TOCBase) {
+        AllResults[Symbol.first] = orc::ExecutorSymbolDef(
+            orc::ExecutorAddr(Linker.BC.PPC64TOCBase), JITSymbolFlags());
+        continue;
+      }
+
       if (const BinaryData *I = Linker.BC.getBinaryDataByName(SymName)) {
         uint64_t Address = I->isMoved() && !I->isJumpTable()
                                ? I->getOutputAddress()
