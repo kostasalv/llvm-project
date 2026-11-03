@@ -1450,6 +1450,13 @@ void RewriteInstance::discoverFileObjects() {
                                     SymbolSize);
       if (!IsSimple)
         BF->setSimple(false);
+      // PPC64 ELFv2: `.long_branch.`, `.plt_branch.` and `.plt_call.` thunks
+      // are linker generated and hold a branch or a TOC relative load that is
+      // only valid at the original address. Keep them in place as raw bytes.
+      if (BC->isPPC64() &&
+          (SymName.contains(".long_branch.") ||
+           SymName.contains(".plt_branch.") || SymName.contains(".plt_call.")))
+        BF->setIgnored();
     }
 
     // Check if it's a cold function fragment.
