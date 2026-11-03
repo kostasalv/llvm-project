@@ -95,12 +95,14 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
       // The block's content is mutable at this point (pre-fixup).
       auto Content = Block->getContent();
       size_t Off = Edge.getOffset();
-      // Guard: need at least 8 bytes (bl + slot).
-      if (Off + 8 > Content.size())
-        continue;
+      // A bl that ends its block has no post-call slot inside the block, so
+      // there is nothing to restore into: applyFixup would read past the end.
+      bool HasSlot = Off + 8 <= Content.size();
       uint32_t Slot =
-          support::endian::read32<Endianness>(Content.data() + Off + 4);
-      if (Slot != NOP) {
+          HasSlot
+              ? support::endian::read32<Endianness>(Content.data() + Off + 4)
+              : 0;
+      if (!HasSlot || Slot != NOP) {
         LLVM_DEBUG(dbgs() << "BOLT PPC64: demoting CallBranchDeltaRestoreTOC"
                           << " to CallBranchDelta at offset 0x"
                           << Twine::utohexstr(Off) << " in block 0x"
