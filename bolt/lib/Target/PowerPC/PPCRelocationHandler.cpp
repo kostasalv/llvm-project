@@ -225,8 +225,8 @@ bool PPC64RelocationHandler::isRelative(uint32_t Type) const {
   return Type == ELF::R_PPC64_RELATIVE;
 }
 
-bool PPC64RelocationHandler::isIRelative(uint32_t) const {
-  llvm_unreachable("Unsupported architecture");
+bool PPC64RelocationHandler::isIRelative(uint32_t Type) const {
+  return Type == ELF::R_PPC64_IRELATIVE;
 }
 
 bool PPC64RelocationHandler::isTLS(uint32_t) const { return false; }
@@ -283,8 +283,12 @@ bool PPC64RelocationHandler::emitsBareSymbol(uint32_t Type) const {
   case ELF::R_PPC64_REL14_BRNTAKEN:
   case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL32:
-  case ELF::R_PPC64_ADDR64:
     return true;
+  // R_PPC64_ADDR64 is doubleword64 S+A (OpenPOWER ABI v1.1 and ELFv2 v2.1.5
+  // relocation tables), so the addend must survive: `main + 0x7fffffff` is
+  // not `main`.
+  case ELF::R_PPC64_ADDR64:
+    return false;
   }
 }
 

@@ -112,10 +112,64 @@ bool PPCMCPlusBuilder::symbolizeTOCSetup(MCInst &Inst, ArrayRef<uint8_t> Code,
   return true;
 }
 
+// R_PPC64_TOC16* are S+A-.TOC. in the half16 or half16ds field (OpenPOWER ABI
+// v1.1 and ELFv2 v2.1.5 relocation tables). They are kept so a reference to a
+// function that moves is computed again for its new address.
+static uint16_t getTOC16Specifier(unsigned Type) {
+  switch (Type) {
+  case ELF::R_PPC64_TOC16_HA:
+    return PPC::S_TOC_HA;
+  case ELF::R_PPC64_TOC16_HI:
+    return PPC::S_TOC_HI;
+  case ELF::R_PPC64_TOC16_LO:
+  case ELF::R_PPC64_TOC16_LO_DS:
+    return PPC::S_TOC_LO;
+  case ELF::R_PPC64_TOC16:
+  case ELF::R_PPC64_TOC16_DS:
+    return PPC::S_TOC;
+  default:
+    return 0;
+  }
+}
+
+bool PPCMCPlusBuilder::symbolizeTOC16Reference(MCInst &Inst,
+                                               const Relocation &Rel,
+                                               MCContext *Ctx) const {
+  const uint16_t Spec = getTOC16Specifier(Rel.Type);
+  if (!Spec || !Rel.Symbol)
+    return false;
+
+  // The relocated field is the only immediate of addis / addi, and the
+  // displacement of the D and DS form loads and stores (rD, disp, rA).
+  for (MCOperand &Op : Inst) {
+    if (!Op.isImm())
+      continue;
+    const MCExpr *Target = MCSymbolRefExpr::create(Rel.Symbol, *Ctx);
+    if (Rel.Addend)
+      Target = MCBinaryExpr::createAdd(
+          Target, MCConstantExpr::create(Rel.Addend, *Ctx), *Ctx);
+    Op = MCOperand::createExpr(MCSpecifierExpr::create(Target, Spec, *Ctx));
+    return true;
+  }
+  return false;
+}
+
+const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCExpr *Expr) const {
+  if (const auto *SpecExpr = dyn_cast<MCSpecifierExpr>(Expr))
+    return getTargetSymbol(SpecExpr->getSubExpr());
+  return MCPlusBuilder::getTargetSymbol(Expr);
+}
+
 bool PPCMCPlusBuilder::shouldRecordCodeRelocation(unsigned Type) const {
   switch (Type) {
   case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL14:
+  case ELF::R_PPC64_TOC16:
+  case ELF::R_PPC64_TOC16_LO:
+  case ELF::R_PPC64_TOC16_HI:
+  case ELF::R_PPC64_TOC16_HA:
+  case ELF::R_PPC64_TOC16_DS:
+  case ELF::R_PPC64_TOC16_LO_DS:
     return true;
   default:
     return false;

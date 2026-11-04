@@ -88,6 +88,11 @@ public:
                          const MCSymbol *FuncSym, bool IsLittleEndian,
                          MCContext *Ctx) const override;
 
+  bool symbolizeTOC16Reference(MCInst &Inst, const Relocation &Rel,
+                               MCContext *Ctx) const override;
+
+  const MCSymbol *getTargetSymbol(const MCExpr *Expr) const override;
+
   /// Return true if \p Instruction is a bctr that dispatches a PIC jump table:
   ///   lwax  rDst, rBase, rIndex  (load signed 32-bit table entry)
   ///   ...

@@ -1395,6 +1395,12 @@ Error BinaryFunction::disassemble() {
                              getAddress(), BC.PPC64TOCBase, getSymbol(),
                              BC.TheTriple->isLittleEndian(), BC.Ctx.get());
 
+    // PPC64: a TOC-relative reference (R_PPC64_TOC16*) is S+A-.TOC., so it has
+    // to be evaluated again once its target moves.
+    if (BC.isPPC64())
+      if (const Relocation *Rel = getRelocationInRange(Offset, Offset + Size))
+        MIB->symbolizeTOC16Reference(Instruction, *Rel, BC.Ctx.get());
+
     // PPC64: track terminator instructions (blr, bctr, unconditional branch)
     if (BC.isPPC64() && (MIB->isReturn(Instruction) ||
                          MIB->isUnconditionalBranch(Instruction))) {
@@ -1763,6 +1769,11 @@ bool BinaryFunction::scanExternalRefs() {
       return ignoreFunctionRef(*TargetFunction);
     };
 
+    // PPC64: give the instruction its TOC16 reference, if it has one.
+    if (BC.isPPC64() && BC.HasRelocations)
+      if (const Relocation *Rel = getRelocationInRange(Offset, Offset + Size))
+        BC.MIB->symbolizeTOC16Reference(Instruction, *Rel, BC.Ctx.get());
+
     // Handle calls and branches separately as symbolization doesn't work for
     // them yet.
     MCSymbol *BranchTargetSymbol = nullptr;
@@ -1894,7 +1905,9 @@ bool BinaryFunction::scanExternalRefs() {
     // On AArch64, we use instruction patches for fixing references. We make an
     // exception for branch instructions since they require optional
     // relocations.
-    if (BC.isAArch64() && !BranchTargetSymbol) {
+    // PPC64 does the same for TOC-relative references: only the instruction
+    // changes, so it is patched in place.
+    if ((BC.isAArch64() || BC.isPPC64()) && !BranchTargetSymbol) {
       LLVM_DEBUG(BC.printInstruction(dbgs(), Instruction, AbsoluteInstrAddr));
       InstructionPatches.push_back({AbsoluteInstrAddr, Instruction});
       continue;

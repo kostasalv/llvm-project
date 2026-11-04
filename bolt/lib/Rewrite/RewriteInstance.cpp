@@ -3037,6 +3037,21 @@ bool RewriteInstance::analyzeRelocation(
 
   const bool IsPCRelative = RH.isPCRelative(RType);
   const uint64_t PCRelOffset = IsPCRelative && !IsAArch64 ? Rel.getOffset() : 0;
+  bool IsPPC64TOC16 = false;
+  if (IsPPC64) {
+    switch (RType) {
+    case ELF::R_PPC64_TOC16:
+    case ELF::R_PPC64_TOC16_LO:
+    case ELF::R_PPC64_TOC16_HI:
+    case ELF::R_PPC64_TOC16_HA:
+    case ELF::R_PPC64_TOC16_DS:
+    case ELF::R_PPC64_TOC16_LO_DS:
+      IsPPC64TOC16 = true;
+      break;
+    default:
+      break;
+    }
+  }
   bool SkipVerification = false;
   auto SymbolIter = Rel.getSymbol();
   if (SymbolIter == InputFile->symbol_end()) {
@@ -3081,20 +3096,11 @@ bool RewriteInstance::analyzeRelocation(
         IsSectionRelocation = (*TypeOrErr == SymbolRef::ST_Debug);
       }
 
-      if (HavePPC64TOCBase) {
-        switch (RType) {
-        case ELF::R_PPC64_TOC16:
-        case ELF::R_PPC64_TOC16_LO:
-        case ELF::R_PPC64_TOC16_HI:
-        case ELF::R_PPC64_TOC16_HA:
-        case ELF::R_PPC64_TOC16_DS:
-        case ELF::R_PPC64_TOC16_LO_DS:
-          SymbolAddress = PPC64TOCBase;
-          break;
-        default:
-          break;
-        }
-      }
+      // R_PPC64_TOC16* is S+A-.TOC. (OpenPOWER ABI v1.1 and ELFv2 v2.1.5
+      // relocation tables). S stays the real symbol so that a reference to a
+      // function that moves is relocated again; the field holds S+A-.TOC., not
+      // S+A, which is why extractValue() gives 0 and the verification below is
+      // skipped.
 
     } else {
       // --- Original fast path for other arches ---
@@ -3133,7 +3139,14 @@ bool RewriteInstance::analyzeRelocation(
     SymbolName = "section " + std::string(Section->getName());
     // Convert section symbol relocations to regular relocations inside
     // non-section symbols.
-    if (Section->containsAddress(ExtractedValue) && !IsPCRelative) {
+    if (IsPPC64 && IsPPC64TOC16) {
+      // The field holds S+A-.TOC., so it says nothing about the target. The
+      // relocation addend is the offset into the section.
+      if (Section->containsAddress(SymbolAddress + Addend)) {
+        SymbolAddress += Addend;
+        Addend = 0;
+      }
+    } else if (Section->containsAddress(ExtractedValue) && !IsPCRelative) {
       SymbolAddress = ExtractedValue;
       Addend = 0;
     } else {
@@ -3205,6 +3218,8 @@ bool RewriteInstance::analyzeRelocation(
     case ELF::R_PPC64_TOC16_LO:
     case ELF::R_PPC64_TOC16_HI:
     case ELF::R_PPC64_TOC16_HA:
+    case ELF::R_PPC64_TOC16_DS:
+    case ELF::R_PPC64_TOC16_LO_DS:
 
     // GOT/TLS pointer materialization
     case ELF::R_PPC64_GOT16:

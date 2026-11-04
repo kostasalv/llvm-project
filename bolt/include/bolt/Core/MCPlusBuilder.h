@@ -1334,6 +1334,16 @@ public:
     return false;
   }
 
+  /// PPC64: if \p Rel is a TOC-relative relocation (R_PPC64_TOC16 and its
+  /// _LO, _HI, _HA, _DS and _LO_DS forms) that the linker resolved into the
+  /// immediate of \p Inst, replace that immediate by an expression of the
+  /// relocation's symbol and addend, so the assembler evaluates it again for
+  /// the symbol's new address. Return true if the instruction was changed.
+  virtual bool symbolizeTOC16Reference(MCInst &Inst, const Relocation &Rel,
+                                       MCContext *Ctx) const {
+    return false;
+  }
+
   // Replace Register in Inst with Imm. Returns true if successful
   virtual bool replaceRegWithImm(MCInst &Inst, unsigned Register,
                                  int64_t Imm) const {
