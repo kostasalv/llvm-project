@@ -167,7 +167,6 @@ uint64_t PPC64RelocationHandler::extractValue(uint32_t Type, uint64_t Contents,
   case ELF::R_PPC64_ADDR16_HI:
   case ELF::R_PPC64_ADDR16_HA:
   case ELF::R_PPC64_ADDR32:
-  case ELF::R_PPC64_ADDR64:
   case ELF::R_PPC64_REL64:
   case ELF::R_PPC64_TOC16_DS:
   case ELF::R_PPC64_TOC16_LO_DS:
@@ -189,6 +188,12 @@ uint64_t PPC64RelocationHandler::extractValue(uint32_t Type, uint64_t Contents,
   case ELF::R_PPC64_GOT16_HA:
   case ELF::R_PPC64_REL32:
     return 0;
+
+  // doubleword64 S+A (OpenPOWER ABI v1.1 and ELFv2 v2.1.5 relocation tables).
+  // In a linked executable the field already holds S+A. Section-symbol
+  // relocations (.init_array, .rodata) need it to recover the addend.
+  case ELF::R_PPC64_ADDR64:
+    return Contents;
 
   case ELF::R_PPC64_REL24: {
     uint32_t li = (Contents >> 2) & 0x00FFFFFF; // bits [6..29]
