@@ -1270,9 +1270,23 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
 
     StringRef Prefix = Section.hasSectionRef() ? OrgSecPrefix : "";
     std::string OutName = (Prefix + Section.getName()).str();
-    // PPC64: drop relocations before emitting .bolt.org.* sections
-    if (BC.isPPC64() && StringRef(OutName).starts_with(OrgSecPrefix))
-      Section.clearRelocations();
+    // PPC64: JITLink cannot apply every relocation kind to .bolt.org.*
+    // sections (e.g. R_PPC64_ADDR32 becomes Pointer32, which it rejects).
+    // Code relocations are regenerated from the function bodies, so drop them
+    // all. Data sections keep R_PPC64_ADDR64 (S + A, doubleword64), which
+    // updates pointers to moved code such as the .toc entry of a function.
+    if (BC.isPPC64() && StringRef(OutName).starts_with(OrgSecPrefix)) {
+      if (Section.isText()) {
+        Section.clearRelocations();
+      } else {
+        SmallVector<uint64_t, 8> Unsupported;
+        for (const Relocation &Rel : Section.relocations())
+          if (Rel.Type != ELF::R_PPC64_ADDR64)
+            Unsupported.push_back(Rel.Offset);
+        for (uint64_t Offset : Unsupported)
+          Section.removeRelocationAt(Offset);
+      }
+    }
     Section.emitAsData(Streamer, OutName);
     Section.clearRelocations();
   }
