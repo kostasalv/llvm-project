@@ -616,6 +616,14 @@ bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
 }
 
 bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
+  // Match the base class: a branch annotated as a tail call is a call. Common
+  // code relies on this, for example the relaxation passes only collect
+  // references that are calls or unconditional branches, and
+  // isUnconditionalBranch() below excludes tail calls.
+  return isCallOpcode(I) || isTailCall(I);
+}
+
+bool PPCMCPlusBuilder::isCallOpcode(const MCInst &I) const {
   switch (I.getOpcode()) {
   // 32-bit direct calls
   case PPC::BL:
@@ -852,7 +860,10 @@ bool PPCMCPlusBuilder::isTerminator(const MCInst &Inst) const {
   // terminator, EXCEPT for call instructions (BL/BLA/BL8 etc.) which are
   // branches-with-link (calls) and should not terminate the basic block.
   // Call instructions have their own handling in BOLT's CFG builder.
-  if ((isBranch(Inst) || isReturn(Inst)) && !isCall(Inst))
+  //
+  // Test the opcode here, not isCall(): a tail call is a plain branch carrying
+  // an annotation, and it still ends its block.
+  if ((isBranch(Inst) || isReturn(Inst)) && !isCallOpcode(Inst))
     return true;
   return MCPlusBuilder::isTerminator(Inst);
 }

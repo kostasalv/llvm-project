@@ -64,6 +64,10 @@ public:
 
   bool isCall(const MCInst &Inst) const override;
 
+  /// True for the call opcodes only (BL*, BCTRL*), whether or not the
+  /// instruction carries a tail-call annotation. isCall() adds the annotation.
+  bool isCallOpcode(const MCInst &Inst) const;
+
   bool isIndirectCall(const MCInst &I) const override;
 
   bool isBranch(const MCInst &Inst) const override;

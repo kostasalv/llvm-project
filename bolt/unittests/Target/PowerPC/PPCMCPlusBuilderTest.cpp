@@ -489,6 +489,20 @@ TEST_F(PPCMCPlusBuilderFixture, ConvertJmpToTailCall_BCTR8) {
   }
 }
 
+TEST_F(PPCMCPlusBuilderFixture, TailCall_IsCallAndStillEndsBlock) {
+  // A tail call is a call, as on the other targets, so that the relaxation
+  // passes collect it. It must still end its block and must not count as an
+  // unconditional branch, or relaxation would take it down the branch path.
+  MCInst I = makeUncondBranch("tail_target");
+  EXPECT_FALSE(BC->MIB->isCall(I));
+  EXPECT_TRUE(BC->MIB->isTerminator(I));
+  EXPECT_TRUE(BC->MIB->isUnconditionalBranch(I));
+  ASSERT_TRUE(BC->MIB->convertJmpToTailCall(I));
+  EXPECT_TRUE(BC->MIB->isCall(I));
+  EXPECT_TRUE(BC->MIB->isTerminator(I));
+  EXPECT_FALSE(BC->MIB->isUnconditionalBranch(I));
+}
+
 TEST_F(PPCMCPlusBuilderFixture, ConvertJmpToTailCall_RejectsNonBranch) {
   // A conditional branch is not an unconditional jump and must be left alone;
   // guards against the switch above being widened carelessly.
