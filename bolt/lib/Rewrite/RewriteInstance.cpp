@@ -73,7 +73,6 @@
 #include <memory>
 #include <optional>
 #include <system_error>
-#include <unordered_map>
 
 #undef  DEBUG_TYPE
 #define DEBUG_TYPE "bolt"
@@ -3550,43 +3549,73 @@ void RewriteInstance::readRelocations(const SectionRef &Section) {
     handleRelocation(RelocatedSection, Rel);
 }
 
-static bool shouldUsePPCAbsoluteCallStub(const RelocationRef &Rel,
-                                         MCSymbol *TargetSym) {
-  (void)Rel;
-  (void)TargetSym;
-  return true;
-}
+/// Return the PPC64 tail-jump stub for \p TargetSym, creating it on first use.
+///
+/// The stub only loads the absolute address of the target into r12 and does
+/// "mtctr; bctr". It does not touch r2 and it does not set LR, so it can stand
+/// in for a plain "b target" at any distance.
+static BinaryFunction *getOrCreatePPCAbsoluteJumpStub(BinaryContext &BC,
+                                                      MCSymbol &TargetSym) {
+  const std::string StubName =
+      ("__bolt_ppc_abs_jmp_stub." + TargetSym.getName()).str();
 
-static BinaryFunction *getOrCreatePPCAbsoluteCallStub(BinaryContext &BC,
-                                                      MCSymbol &TargetSym,
-                                                      MCPlusBuilder &MIB) {
-  std::string StubName =
-      ("__bolt_ppc_abs_call_stub." + TargetSym.getName()).str();
+  if (MCSymbol *Existing = BC.Ctx->lookupSymbol(StubName))
+    if (BinaryFunction *StubBF = BC.getFunctionForSymbol(Existing))
+      return StubBF;
 
-  static std::unordered_map<std::string, BinaryFunction *> PPCStubCache;
-  auto It = PPCStubCache.find(StubName);
-  if (It != PPCStubCache.end())
-    return It->second;
-
-  // Create an injected fuction for the stub.
-  auto *StubBF = BC.createInjectedBinaryFunction(StubName, /*IsSimple=*/true);
-
-  // Build one basic block
+  BinaryFunction *StubBF =
+      BC.createInjectedBinaryFunction(StubName, /*IsSimple=*/true);
+  StubBF->setAlignment(4);
   BinaryBasicBlock *BB = StubBF->addBasicBlock(/*Label=*/nullptr);
 
-  MCContext &Ctx = *BC.Ctx;
-
-  // Build the stub MCInsts
   std::vector<MCInst> Seq;
-  auto &PPCBuilder = static_cast<PPCMCPlusBuilder &>(*BC.MIB);
-  PPCBuilder.buildCallStubAbsolute(&Ctx, &TargetSym, Seq);
-
-  // Append instructions to the basic block
-  for (auto &I : Seq)
-    BB->addInstruction(I);
-
-  PPCStubCache.emplace(StubName, StubBF);
+  BC.MIB->createLongTailCall(Seq, &TargetSym, BC.Ctx.get());
+  for (const MCInst &Inst : Seq)
+    BB->addInstruction(Inst);
   return StubBF;
+}
+
+/// PPC64: send branches that have no relocation, and that target a function
+/// that is not emitted (so it stays where it was), through an r2-free
+/// tail-jump stub.
+///
+/// A branch with no relocation comes from code the linker generated, such as a
+/// call or branch thunk. It is disassembled as a reference to "FUNCat<addr>".
+/// If the target function stays in its original place (for example because it
+/// was ignored), the linker step in BOLT would otherwise give the branch a
+/// long-branch stub that saves and uses r2. That is wrong when the branch is
+/// reached with no valid TOC pointer. The stub built here uses no r2 and keeps
+/// LR, as ELFv2 requires of a plain branch.
+///
+/// Calls ("bl") keep the normal handling, which restores r2 after the call.
+static void redirectPPC64BranchesToUnmovedFunctions(BinaryContext &BC) {
+  if (!BC.isPPC64())
+    return;
+
+  auto &PPCBuilder = static_cast<PPCMCPlusBuilder &>(*BC.MIB);
+  for (auto &BFI : BC.getBinaryFunctions()) {
+    BinaryFunction &Function = BFI.second;
+    if (!BC.shouldEmit(Function) || !Function.isSimple() ||
+        !Function.hasInstructions())
+      continue;
+
+    for (auto &[Offset, Inst] : Function.instrs()) {
+      const MCSymbol *Target = PPCBuilder.getPlainBranchTargetSymbol(Inst);
+      if (!Target)
+        continue;
+      if (!BC.MIB->hasAnnotation(Inst, "PPC64UnrelocatedBranch"))
+        continue;
+
+      BinaryFunction *TargetFunction = BC.getFunctionForSymbol(Target);
+      if (!TargetFunction || TargetFunction == &Function ||
+          TargetFunction->isPseudo() || BC.shouldEmit(*TargetFunction))
+        continue;
+
+      BinaryFunction *StubBF = getOrCreatePPCAbsoluteJumpStub(
+          BC, *const_cast<MCSymbol *>(Target));
+      PPCBuilder.replaceBranchTarget(Inst, StubBF->getSymbol(), BC.Ctx.get());
+    }
+  }
 }
 
 void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
@@ -3630,6 +3659,42 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
     return;
   }
 
+  // The ELFv2 global entry point sets the TOC pointer with
+  //   addis r2, r12, (.TOC. - func)@ha    R_PPC64_REL16_HA .TOC. + 0
+  //   addi  r2, r2,  (.TOC. - func)@l     R_PPC64_REL16_LO .TOC. + 4
+  // (OpenPOWER ABI v1.1 p.69, ELFv2 v2.1.5 section 2.3.2). BOLT keeps no
+  // relocation for this pair: PPCMCPlusBuilder::symbolizeTOCSetup recognises it
+  // from its bytes while the function is disassembled and gives the immediates
+  // back as (.TOC. - func)@ha/@l. Nothing is left to analyze, so do not count
+  // it as a failed relocation. Anything that is not exactly this shape (another
+  // symbol, another addend, another place in the function) still takes the
+  // path below and is reported. Code that no BinaryFunction owns is never moved,
+  // so its TOC setup stays valid as it is.
+  if (IsPPC64 && IsFromCode &&
+      (RType == ELF::R_PPC64_REL16_HA || RType == ELF::R_PPC64_REL16_LO)) {
+    symbol_iterator TOCSym = Rel.getSymbol();
+    if (TOCSym != InputFile->symbol_end()) {
+      Expected<StringRef> TOCName = TOCSym->getName();
+      if (!TOCName) {
+        consumeError(TOCName.takeError());
+      } else if (*TOCName == ".TOC.") {
+        const bool IsHA = RType == ELF::R_PPC64_REL16_HA;
+        const uint64_t ExpectedOffset = IsHA ? 0 : 4;
+        const BinaryFunction *OwnerBF = BC->getBinaryFunctionContainingAddress(
+            Rel.getOffset(), /*CheckPastEnd*/ false, /*UseMaxSize*/ true);
+        if (getRelocationAddend(InputFile, Rel) ==
+                static_cast<int64_t>(ExpectedOffset) &&
+            (!OwnerBF ||
+             Rel.getOffset() - OwnerBF->getAddress() == ExpectedOffset)) {
+          LLVM_DEBUG(dbgs() << "BOLT-DEBUG: TOC setup relocation @ offset = "
+                            << formatv("{0:x}", Rel.getOffset())
+                            << " is handled by symbolizeTOCSetup\n");
+          return;
+        }
+      }
+    }
+  }
+
   std::string SymbolName;
   uint64_t SymbolAddress;
   int64_t Addend;
@@ -3645,7 +3710,7 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
     return;
   }
 
-  if (!IsFromCode && !IsWritable && (IsX86 || IsAArch64) &&
+  if (!IsFromCode && !IsWritable && (IsX86 || IsAArch64 || IsPPC64) &&
       RH.isPCRelative(RType)) {
     BinaryData *BD = BC->getBinaryDataContainingAddress(Rel.getOffset());
     if (BD && BD->isVTable()) {
@@ -3701,22 +3766,6 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
         ReferencedSymbol = BD->getSymbol();
     } else if (BinaryData *BD = BC->getBinaryDataAtAddress(SymbolAddress)) {
       ReferencedSymbol = BD->getSymbol();
-    }
-  }
-
-  if (IsPPC64 && IsFromCode &&
-      (RType == ELF::R_PPC64_REL24 || RType == ELF::R_PPC64_REL24_NOTOC) &&
-      ReferencedSymbol) {
-
-    const StringRef SymName = ReferencedSymbol->getName();
-    const bool AlreadyStub = SymName.starts_with("__bolt_ppc_abs_call_stub.");
-
-    if (!AlreadyStub && shouldUsePPCAbsoluteCallStub(Rel, ReferencedSymbol)) {
-      auto *StubBF =
-          getOrCreatePPCAbsoluteCallStub(*BC, *ReferencedSymbol, *BC->MIB);
-      ReferencedSymbol = StubBF->getSymbol(); // redirect to stub
-      Addend = 0;
-      ExtractedValue = 0;
     }
   }
 
@@ -4478,6 +4527,8 @@ void RewriteInstance::disassembleFunctions() {
 
   BC->clearJumpTableTempData();
   BC->adjustCodePadding();
+
+  redirectPPC64BranchesToUnmovedFunctions(*BC);
 
   for (auto &BFI : BC->getBinaryFunctions()) {
     BinaryFunction &Function = BFI.second;

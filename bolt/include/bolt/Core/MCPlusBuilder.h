@@ -1425,6 +1425,20 @@ public:
 
   virtual bool isTOCRestoreAfterCall(const MCInst &Inst) const { return false; }
 
+  /// PPC64 ELFv2 (Power ISA call-slot rule, ELFv2 ABI section 2.2.1.1): a call
+  /// that may go through a linker-generated stub must be followed by a slot
+  /// instruction that the linker can turn into the TOC restore. Return true if
+  /// \p Inst is a call that already carries that slot inside its own encoding.
+  virtual bool isCallWithNOPSlot(const MCInst &Inst) const { return false; }
+
+  /// Return true if \p Inst, found right after a call, already occupies the
+  /// call slot (a nop, or the TOC restore itself). It must never be replaced.
+  virtual bool isCallSlotInstruction(const MCInst &Inst) const { return false; }
+
+  /// Rewrite the call \p Inst into its form with an in-line NOP slot. Return
+  /// true if the call was rewritten.
+  virtual bool ensureCallNOPSlot(MCInst &Inst) const { return false; }
+
   /// Return true if \p Instruction is an indirect branch that dispatches a
   /// PIC jump table on PPC64 ELFv2 (bctr preceded by mtctr and lwax).
   /// Used during disassembly to mark the jump table data as a constant island

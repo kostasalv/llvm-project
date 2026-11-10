@@ -37,10 +37,13 @@ using namespace llvm;
 using namespace bolt;
 
 static const MCSymbol *getBranchTargetSymbol(const MCInst &I) {
-  // For B/BC the last operand is a branch target (expr)
-  if (I.getNumOperands() == 0)
+  // For B/BC the last operand is a branch target (expr). BOLT appends its
+  // annotations (such as the instruction offset) after the real operands, so
+  // count only the prime operands.
+  const unsigned NumOps = MCPlus::getNumPrimeOperands(I);
+  if (NumOps == 0)
     return nullptr;
-  const MCOperand &Op = I.getOperand(I.getNumOperands() - 1);
+  const MCOperand &Op = I.getOperand(NumOps - 1);
   if (!Op.isExpr())
     return nullptr;
   if (auto *SymRef = dyn_cast<MCSymbolRefExpr>(Op.getExpr()))
@@ -160,6 +163,15 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCExpr *Expr) const {
   return MCPlusBuilder::getTargetSymbol(Expr);
 }
 
+bool PPCMCPlusBuilder::equals(const MCSpecifierExpr &A,
+                              const MCSpecifierExpr &B,
+                              CompFuncTy Comp) const {
+  if (A.getSpecifier() != B.getSpecifier())
+    return false;
+
+  return MCPlusBuilder::equals(*A.getSubExpr(), *B.getSubExpr(), Comp);
+}
+
 bool PPCMCPlusBuilder::shouldRecordCodeRelocation(unsigned Type) const {
   switch (Type) {
   case ELF::R_PPC64_REL24:
@@ -212,8 +224,10 @@ bool PPCMCPlusBuilder::hasPCRelOperand(const MCInst &I) const {
 int PPCMCPlusBuilder::getPCRelOperandNum(const MCInst &I) const {
   switch (I.getOpcode()) {
   // Relative direct call/branch – target is operand #0 in MC (Imm/Expr)
-  case PPC::BL: // relative call
-  case PPC::B:  // unconditional relative branch
+  case PPC::BL:      // relative call
+  case PPC::BL_NOP:  // relative call with the ELFv2 call-slot nop
+  case PPC::BL8_NOP: // same, 64-bit form
+  case PPC::B:       // unconditional relative branch
     return 0;
 
   // Conditional relative branch: BO, BI, BD
@@ -265,6 +279,13 @@ const MCSymbol *PPCMCPlusBuilder::getTargetSymbol(const MCInst &Inst,
   return nullptr;
 }
 
+const MCSymbol *
+PPCMCPlusBuilder::getPlainBranchTargetSymbol(const MCInst &Inst) const {
+  if (Inst.getOpcode() != PPC::B)
+    return nullptr;
+  return getBranchTargetSymbol(Inst);
+}
+
 bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
   switch (Inst.getOpcode()) {
   case PPC::B:
@@ -278,9 +299,11 @@ bool PPCMCPlusBuilder::convertJmpToTailCall(MCInst &Inst) {
 
 bool PPCMCPlusBuilder::isCall(const MCInst &I) const {
   switch (I.getOpcode()) {
-  case PPC::BL:    // direct relative call
-  case PPC::BLA:   // direct absolute call
-  case PPC::BCTRL: // indirect call via CTR
+  case PPC::BL:      // direct relative call
+  case PPC::BL_NOP:  // direct relative call plus call-slot nop
+  case PPC::BL8_NOP: // same, 64-bit form
+  case PPC::BLA:     // direct absolute call
+  case PPC::BCTRL:   // indirect call via CTR
     return true;
   default:
     return false;
@@ -300,6 +323,8 @@ bool PPCMCPlusBuilder::isBranch(const MCInst &I) const {
   switch (I.getOpcode()) {
   case PPC::B:     // unconditional branch
   case PPC::BL:    // branch with link (treated as call, but still a branch)
+  case PPC::BL_NOP:  // branch with link plus call-slot nop
+  case PPC::BL8_NOP: // same, 64-bit form
   case PPC::BLA:   // absolute branch with link
   case PPC::BC:    // conditional branch
   case PPC::BCL:   // conditional branch with link
@@ -474,6 +499,16 @@ bool PPCMCPlusBuilder::isNoop(const MCInst &Inst) const {
          Inst.getOperand(0).getReg() == PPC::R0 && Inst.getOperand(1).isReg() &&
          Inst.getOperand(1).getReg() == PPC::R0 && Inst.getOperand(2).isImm() &&
          Inst.getOperand(2).getImm() == 0;
+}
+
+StringRef PPCMCPlusBuilder::getTrapFillValue() const {
+  // Power ISA v3.1C, Appendix C.6: `trap` is `tw 31,0,0`, the word 0x7FE00008.
+  // Instructions are 4 bytes in either endianness, so a fill of whole words
+  // always lands on an instruction boundary.
+  static constexpr char TrapLE[] = {'\x08', '\x00', '\xe0', '\x7f'};
+  static constexpr char TrapBE[] = {'\x7f', '\xe0', '\x00', '\x08'};
+  return STI->getTargetTriple().isLittleEndian() ? StringRef(TrapLE, 4)
+                                                 : StringRef(TrapBE, 4);
 }
 
 void PPCMCPlusBuilder::createNoop(MCInst &Nop) const {
@@ -747,6 +782,32 @@ PPCMCPlusBuilder::createRelocation(const MCFixup &Fixup,
   return std::nullopt;
 }
 
+bool PPCMCPlusBuilder::isCallWithNOPSlot(const MCInst &Inst) const {
+  switch (Inst.getOpcode()) {
+  case PPC::BL_NOP:
+  case PPC::BL8_NOP:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool PPCMCPlusBuilder::isCallSlotInstruction(const MCInst &Inst) const {
+  // The disassembler decodes `nop` as PPC::NOP, while createNoop() builds
+  // `ori r0,r0,0`; both are the same word, 0x60000000.
+  return Inst.getOpcode() == PPC::NOP || isNoop(Inst) ||
+         isTOCRestoreAfterCall(Inst);
+}
+
+bool PPCMCPlusBuilder::ensureCallNOPSlot(MCInst &Inst) const {
+  // Only a direct relative call is widened. The operands (the call target) are
+  // identical, and BOLT annotations stay attached to the instruction.
+  if (Inst.getOpcode() != PPC::BL)
+    return false;
+  Inst.setOpcode(PPC::BL_NOP);
+  return true;
+}
+
 bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
   LLVM_DEBUG({
     dbgs() << "TOC-RESTORE check: " << I.getOpcode() << " (";
@@ -779,106 +840,6 @@ bool PPCMCPlusBuilder::isTOCRestoreAfterCall(const MCInst &I) const {
     return false;
 
   return true;
-}
-
-static inline MCOperand R(unsigned Reg) { return MCOperand::createReg(Reg); }
-
-// Build a 64-bit absolute address of the callee's function address (e.g.
-// "puts") into r12, then tail-call it via BCTR.
-void PPCMCPlusBuilder::buildCallStubAbsolute(MCContext *Ctx,
-                                             const MCSymbol *Target,
-                                             std::vector<MCInst> &Out) const {
-  Out.clear();
-  // --- Absolute 64-bit materialization of Target into r12 (no TOC/r2) ---
-  // r12 = Target, assembled from four 16-bit pieces via logical ORs.
-  const unsigned R12 = PPC::X12;
-
-  const MCExpr *HST =
-      MCSymbolRefExpr::create(Target, PPC::S_HIGHEST, *Ctx); // bits 48..63
-  const MCExpr *HER =
-      MCSymbolRefExpr::create(Target, PPC::S_HIGHER, *Ctx); // bits 32..47
-  const MCExpr *HI =
-      MCSymbolRefExpr::create(Target, PPC::S_HI, *Ctx); // bits 16..31  (@h)
-  const MCExpr *LO =
-      MCSymbolRefExpr::create(Target, PPC::S_LO, *Ctx); // bits 0..15   (@l)
-
-  MCInst I;
-
-  // std r2, 24(r1)      ; save caller's TOC
-  I = MCInst();
-  I.setOpcode(PPC::STD);
-  I.addOperand(R(PPC::X2)); // reg (src)
-  I.addOperand(MCOperand::createExpr(
-      MCConstantExpr::create(24, *Ctx))); // disp (slot #1)
-  I.addOperand(R(PPC::X1));               // base (slot #2)
-  Out.push_back(I);
-
-  // lis    r12, Target@highest         ; r12 = highest << 16
-  I = MCInst();
-  I.setOpcode(PPC::LIS8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HST));
-  Out.push_back(I);
-
-  // ori    r12, r12, Target@higher     ; r12 |= higher
-  I = MCInst();
-  I.setOpcode(PPC::ORI8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HER));
-  Out.push_back(I);
-
-  // rldicr r12, r12, 32, 31            ; shift the top 32 bits up
-  I = MCInst();
-  I.setOpcode(PPC::RLDICR);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createImm(32)); // shift amount
-  I.addOperand(MCOperand::createImm(
-      31)); // mask end (MB..ME semantics from PPCInstrInfo.cpp:3470)
-  Out.push_back(I);
-
-  // oris   r12, r12, Target@h          ; r12 |= (high << 16)
-  I = MCInst();
-  I.setOpcode(PPC::ORIS8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(HI));
-  Out.push_back(I);
-
-  // ori    r12, r12, Target@l          ; r12 |= low
-  I = MCInst();
-  I.setOpcode(PPC::ORI8);
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createReg(R12));
-  I.addOperand(MCOperand::createExpr(LO));
-  Out.push_back(I);
-  // --- r12 now holds the absolute address of Target ---
-
-  // mtctr r12
-  I = MCInst();
-  I.setOpcode(PPC::MTCTR8);
-  I.addOperand(R(R12));
-  Out.push_back(I);
-
-  // bctrl               ; link-return to stub
-  I = MCInst();
-  I.setOpcode(PPC::BCTRL);
-  Out.push_back(I);
-
-  // ld r2, 24(r1)       ; restore TOC
-  I = MCInst();
-  I.setOpcode(PPC::LD);
-  I.addOperand(R(PPC::X2)); // reg (dst)
-  I.addOperand(MCOperand::createExpr(
-      MCConstantExpr::create(24, *Ctx))); // disp (slot #1)
-  I.addOperand(R(PPC::X1));               // base (slot #2)
-  Out.push_back(I);
-
-  // blr                 ; return to caller
-  I = MCInst();
-  I.setOpcode(PPC::BLR8); // or PPC::BLR on some trees
-  Out.push_back(I);
 }
 
 namespace llvm {

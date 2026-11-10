@@ -3,6 +3,8 @@
 // section into its own segment, separated from its surrounding RX sections.
 
 // REQUIRES: system-linux
+// BOLT instrumentation is not implemented for PPC64 yet (pending follow-up).
+// UNSUPPORTED: target=powerpc64{{.*}}
 
 void foo() {}
 void bar() { foo(); }

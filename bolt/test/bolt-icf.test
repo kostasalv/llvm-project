@@ -2,6 +2,10 @@
 
 REQUIRES: system-linux
 
+# TODO(PPC64): ICF refuses functions with a secondary entry, and same-module
+# callers use the ELFv2 local entry (foo+8), so foo and bar never fold.
+XFAIL: target=powerpc64{{.*}}
+
 RUN: %clangxx %p/Inputs/bolt_icf.cpp -g -Wl,-q -o %t.exe
 RUN: llvm-bolt %t.exe --relocs -o %t --icf 2>&1 | FileCheck %s
 RUN: llvm-nm -n %t | FileCheck %s -check-prefix=CHECK-SYM

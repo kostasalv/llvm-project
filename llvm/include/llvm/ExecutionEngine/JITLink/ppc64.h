@@ -392,6 +392,18 @@ inline Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
     support::endian::write64<Endianness>(FixupPtr, Value);
     break;
   }
+  case Pointer32: {
+    // R_PPC64_ADDR32 is word32* with calculation S + A. A word32 field holds
+    // either a signed or an unsigned 32-bit value (it is used for both
+    // addresses and plain data), so accept [INT32_MIN, UINT32_MAX], the same
+    // range lld's checkIntUInt(..., 32, ...) accepts for this relocation.
+    uint64_t Value = S + A;
+    if (LLVM_UNLIKELY(!isInt<32>(static_cast<int64_t>(Value)) &&
+                      !isUInt<32>(Value)))
+      return makeTargetOutOfRangeError(G, B, E);
+    support::endian::write32<Endianness>(FixupPtr, Value);
+    break;
+  }
   case Delta16:
   case Delta16HA:
   case Delta16HI:

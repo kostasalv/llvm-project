@@ -23,6 +23,7 @@
 # RUN: llvm-mc -filetype=obj -triple powerpc64le-unknown-linux-gnu %s -o %t.o
 # RUN: ld.lld %t.o -o %t.exe -e _start --emit-relocs
 # RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s
+# RUN: llvm-objdump -d %t.bolt | FileCheck %s --check-prefix=STUB
 # RUN: %t.bolt
 
 # CHECK: BOLT-INFO: Target architecture: powerpc64le
@@ -30,6 +31,23 @@
 ## The table must not be decoded, and its CFI must still attach.
 # CHECK-NOT: unable to disassemble instruction at offset
 # CHECK-NOT: CFI pointing to unknown instruction
+## foo's TOC-relative reference to the table makes BOLT leave foo in place. The
+## warning must say that, not claim the control flow is corrupted.
+# CHECK:     BOLT-WARNING: function foo{{.*}} references data embedded in its code
+# CHECK-NOT: corrupted control flow
+
+## foo is not moved, but the linker's call thunk for it is. The thunk's branch
+## has no relocation, so it must reach foo through the r2-free tail-jump stub
+## and not through a stub that uses the TOC pointer, which is not set up here.
+# STUB-LABEL: <__bolt_ppc_abs_jmp_stub.{{.*}}>:
+# STUB:       lis     12
+# STUB:       ori     12, 12
+# STUB:       sldi    12, 12, 32
+# STUB:       oris    12, 12
+# STUB:       ori     12, 12
+# STUB:       mtctr   12
+# STUB-NEXT:  bctr
+# STUB-NOT:   addis   12, 2
         .text
         .abiversion 2
 ## foo returns 0 for argument 0 and dispatches through a PIC jump table

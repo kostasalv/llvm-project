@@ -15,6 +15,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "bolt-reloc"
@@ -120,13 +121,14 @@ size_t PPC64RelocationHandler::getSizeForType(uint32_t Type) const {
   case ELF::R_PPC64_GOT16_HA:
     return 2;
   case ELF::R_PPC64_ADDR32:
+  // word32* S+A-P (OpenPOWER ABI v1.1 and ELFv2 v2.1.5 relocation tables).
+  case ELF::R_PPC64_REL32:
   case ELF::R_PPC64_REL24:
   case ELF::R_PPC64_REL14:
   case ELF::R_PPC64_REL14_BRTAKEN:
   case ELF::R_PPC64_REL14_BRNTAKEN:
     return 4;
   case ELF::R_PPC64_ADDR64:
-  case ELF::R_PPC64_REL32:
   case ELF::R_PPC64_REL64:
   case ELF::R_PPC64_TOC:
     return 8;
@@ -186,8 +188,12 @@ uint64_t PPC64RelocationHandler::extractValue(uint32_t Type, uint64_t Contents,
   case ELF::R_PPC64_GOT16_LO:
   case ELF::R_PPC64_GOT16_HI:
   case ELF::R_PPC64_GOT16_HA:
-  case ELF::R_PPC64_REL32:
     return 0;
+
+  // word32* S+A-P (OpenPOWER ABI v1.1 and ELFv2 v2.1.5 relocation tables). The
+  // field is a signed 32 bit distance, as for the other PC-relative types.
+  case ELF::R_PPC64_REL32:
+    return SignExtend64<32>(Contents);
 
   // doubleword64 S+A (OpenPOWER ABI v1.1 and ELFv2 v2.1.5 relocation tables).
   // In a linked executable the field already holds S+A. Section-symbol
@@ -282,8 +288,13 @@ bool PPC64RelocationHandler::emitsBareSymbol(uint32_t Type) const {
   case ELF::R_PPC64_REL14_BRTAKEN:
   case ELF::R_PPC64_REL14_BRNTAKEN:
   case ELF::R_PPC64_REL24:
-  case ELF::R_PPC64_REL32:
     return true;
+  // R_PPC64_REL32 is word32* S+A-P (OpenPOWER ABI v1.1 and ELFv2 v2.1.5
+  // relocation tables), a data word that no instruction fixup encodes, so the
+  // addend and the PC-relative subtraction must be emitted. The relative-vtable
+  // slots are `method + 0/4/8`.
+  case ELF::R_PPC64_REL32:
+    return false;
   // R_PPC64_ADDR64 is doubleword64 S+A (OpenPOWER ABI v1.1 and ELFv2 v2.1.5
   // relocation tables), so the addend must survive: `main + 0x7fffffff` is
   // not `main`.

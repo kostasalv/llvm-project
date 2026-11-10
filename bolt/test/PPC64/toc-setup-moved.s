@@ -13,7 +13,14 @@
 # RUN: llvm-mc -filetype=obj -triple powerpc64le-unknown-linux-gnu %s -o %t.o
 # RUN: ld.lld %t.o -o %t.exe -e _start --emit-relocs
 # RUN: %t.exe
-# RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s
+## Guard: the input must really carry the relocations under test, otherwise the
+## warning check below could pass for the wrong reason.
+# RUN: llvm-readelf -rW %t.exe | FileCheck %s --check-prefix=INPUT
+# INPUT-DAG: R_PPC64_REL16_HA {{.*}} .TOC. + 0
+# INPUT-DAG: R_PPC64_REL16_LO {{.*}} .TOC. + 4
+## The TOC setup relocations are handled by symbolizeTOCSetup, so they must not
+## be reported as relocations BOLT failed to analyze.
+# RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s --implicit-check-not="Failed to analyze"
 # RUN: %t.bolt
 # CHECK: BOLT-INFO: Target architecture: powerpc64le
 # CHECK: BOLT-INFO: enabling relocation mode

@@ -60,6 +60,10 @@ public:
   bool isNoop(const MCInst &Inst) const override;
   void createNoop(MCInst &Nop) const override;
 
+  /// The unconditional trap, `tw 31,0,0` (extended mnemonic `trap`), in the
+  /// byte order of the target.
+  StringRef getTrapFillValue() const override;
+
   /// Create a return instruction (blr on PPC64).
   void createReturn(MCInst &Inst) const override;
 
@@ -83,6 +87,18 @@ public:
 
   bool isTOCRestoreAfterCall(const MCInst &I) const override;
 
+  /// BL_NOP and BL8_NOP are one 8-byte instruction, `bl target` plus the nop
+  /// of the ELFv2 call slot.
+  bool isCallWithNOPSlot(const MCInst &Inst) const override;
+
+  /// True for a nop (`nop` or `ori r0,r0,0`) or the TOC restore
+  /// `ld r2,24(r1)`.
+  bool isCallSlotInstruction(const MCInst &Inst) const override;
+
+  /// Turn `bl` into `BL_NOP`, so the slot is part of the instruction and is
+  /// counted by every size computation.
+  bool ensureCallNOPSlot(MCInst &Inst) const override;
+
   bool symbolizeTOCSetup(MCInst &Inst, ArrayRef<uint8_t> Code, uint64_t Offset,
                          uint64_t FuncAddr, uint64_t TOCBase,
                          const MCSymbol *FuncSym, bool IsLittleEndian,
@@ -93,6 +109,18 @@ public:
 
   const MCSymbol *getTargetSymbol(const MCExpr *Expr) const override;
 
+  /// Two specifier expressions (@ha, @l, @toc@ha, ...) are equal when they have
+  /// the same specifier and equal sub-expressions. The default implementation
+  /// aborts, and identical code folding reaches it with the operands that
+  /// symbolizeTOCSetup and symbolizeTOC16Reference create.
+  bool equals(const MCSpecifierExpr &A, const MCSpecifierExpr &B,
+              CompFuncTy Comp) const override;
+
+  /// If \p Inst is a plain relative branch (b, not bl) whose target is a
+  /// symbol, return that symbol. Return nullptr for every other instruction.
+  /// Such a branch does not set LR, so it can be sent through a tail-jump stub.
+  const MCSymbol *getPlainBranchTargetSymbol(const MCInst &Inst) const;
+
   /// Return true if \p Instruction is a bctr that dispatches a PIC jump table:
   ///   lwax  rDst, rBase, rIndex  (load signed 32-bit table entry)
   ///   ...
@@ -100,12 +128,6 @@ public:
   ///   bctr                       <- Instruction
   bool isPICJumpTableBctr(const MCInst &Instruction, InstructionIterator Begin,
                           InstructionIterator End) const override;
-
-  // Build a PPC64 call-stub as MCInsts; the stub tail-calls Target via CTR.
-  // Out will receive: [std r2,24(r1)] (optional), address materialization into
-  // r12, mtctr r12, bctr. No @toc* fixups are used.
-  void buildCallStubAbsolute(MCContext *Ctx, const MCSymbol *TargetSym,
-                             std::vector<MCInst> &Out) const;
 };
 
 } // namespace bolt

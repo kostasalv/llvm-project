@@ -115,6 +115,43 @@ Error ppc64DowngradeRestoreTOCIfNoNOP(jitlink::LinkGraph &G) {
   return Error::success();
 }
 
+/// PPC64 ELFv2: remove JITLink's $__GOT section when nothing uses it.
+///
+/// JITLink's ELF ppc64 linker always creates $__GOT with an 8-byte header that
+/// holds the TOC base (ELFv2 ABI, section 4.2.5.1), even when no stub or GOT
+/// entry needs the section. BOLT would allocate it in a segment of its own,
+/// which grows the output file and, for --use-old-text, turns an in-place
+/// rewrite into one that adds a segment.
+///
+/// BOLT does not need the header. The functions it rewrites keep the input
+/// binary's r2, and the linker's lookup resolves .TOC. to that TOC base, which
+/// is also the value the PreFixupPass in modifyPassConfig forces onto the .TOC.
+/// that JITLink would otherwise define inside $__GOT. TOC-relative fixups are
+/// therefore the same with or without the section. It must be kept when it
+/// holds more than the header (PLT stubs or GOT entries) or when an edge
+/// targets it.
+Error ppc64DropUnusedTOCSection(jitlink::LinkGraph &G) {
+  // getSectionName() is static and does not depend on the endianness.
+  using TOCManager = jitlink::ppc64::TOCTableManager<llvm::endianness::little>;
+  jitlink::Section *TOCSection =
+      G.findSectionByName(TOCManager::getSectionName());
+  if (!TOCSection || TOCSection->blocks_size() != 1)
+    return Error::success();
+
+  jitlink::Block *TOCBlock = *TOCSection->blocks().begin();
+  for (jitlink::Block *B : G.blocks())
+    for (const jitlink::Edge &E : B->edges())
+      if (E.getTarget().isDefined() && &E.getTarget().getBlock() == TOCBlock)
+        return Error::success();
+
+  SmallVector<jitlink::Symbol *, 2> Symbols(TOCSection->symbols());
+  for (jitlink::Symbol *Sym : Symbols)
+    G.removeDefinedSymbol(*Sym);
+  G.removeBlock(*TOCBlock);
+  G.removeSection(*TOCSection);
+  return Error::success();
+}
+
 } // anonymous namespace
 
 struct JITLinkLinker::Context : jitlink::JITLinkContext {
@@ -182,6 +219,10 @@ struct JITLinkLinker::Context : jitlink::JITLinkContext {
     // CallBranchDelta.  This prevents applyFixup from overwriting live code
     // in tail calls and non-simple functions emitted as raw bytes by BOLT.
     if (G.getTargetTriple().isPPC64()) {
+      // The lookup resolves .TOC. to the input TOC base, so $__GOT is only
+      // redundant when that base is known.
+      if (Linker.BC.PPC64TOCBase != 0)
+        Config.PostPrunePasses.push_back(ppc64DropUnusedTOCSection);
       bool IsLE = G.getTargetTriple().getArch() == Triple::ppc64le;
       if (IsLE)
         Config.PostPrunePasses.push_back(

@@ -524,7 +524,8 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
         LLVM_DEBUG(dbgs() << "EMIT is TOC-restore\n");
 
       // --- PPC64 ELFv2: guarantee a post-call NOP (call slot)
-      if (BC.isPPC64() && BC.MIB->isCall(Instr)) {
+      if (BC.isPPC64() && BC.MIB->isCall(Instr) &&
+          !BC.MIB->isCallWithNOPSlot(Instr)) {
         bool NeedSlot = true;
         LLVM_DEBUG(dbgs() << "PPC emit: call, considering slot after\n");
 
@@ -541,10 +542,8 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, FunctionFragment &FF,
                            ? " (TOC restore)\n"
                            : "\n");
         });
-        if (NextI != E &&
-            (BC.MIB->isNoop(*NextI) || BC.MIB->isTOCRestoreAfterCall(*NextI))) {
+        if (NextI != E && BC.MIB->isCallSlotInstruction(*NextI))
           NeedSlot = false;
-        }
 
         if (NeedSlot) {
           LLVM_DEBUG(dbgs() << "PPC emit: inserting post-call NOP\n");
@@ -1274,14 +1273,17 @@ void BinaryEmitter::emitDataSections(StringRef OrgSecPrefix) {
     // sections (e.g. R_PPC64_ADDR32 becomes Pointer32, which it rejects).
     // Code relocations are regenerated from the function bodies, so drop them
     // all. Data sections keep R_PPC64_ADDR64 (S + A, doubleword64), which
-    // updates pointers to moved code such as the .toc entry of a function.
+    // updates pointers to moved code such as the .toc entry of a function, and
+    // R_PPC64_REL32 (S + A - P, word32), which updates the 32 bit relative
+    // slots of a relative vtable. JITLink applies it as Delta32.
     if (BC.isPPC64() && StringRef(OutName).starts_with(OrgSecPrefix)) {
       if (Section.isText()) {
         Section.clearRelocations();
       } else {
         SmallVector<uint64_t, 8> Unsupported;
         for (const Relocation &Rel : Section.relocations())
-          if (Rel.Type != ELF::R_PPC64_ADDR64)
+          if (Rel.Type != ELF::R_PPC64_ADDR64 &&
+              Rel.Type != ELF::R_PPC64_REL32)
             Unsupported.push_back(Rel.Offset);
         for (uint64_t Offset : Unsupported)
           Section.removeRelocationAt(Offset);

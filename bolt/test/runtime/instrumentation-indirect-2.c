@@ -51,6 +51,8 @@ int main() {
 }
 /*
 REQUIRES: system-linux,fuser
+# BOLT instrumentation is not implemented for PPC64 yet (pending follow-up).
+UNSUPPORTED: target=powerpc64{{.*}}
 
 RUN: %clang %cflags %s -o %t.exe -Wl,-q -pie -fpie
 

@@ -4,6 +4,11 @@
 
 // REQUIRES: gnu_ld
 
+// GNU ld plt_call thunks on PPC64 are not supported yet: BOLT routes calls to
+// them through a JITLink stub with an absolute pointer, which a PIE cannot
+// relocate.
+// XFAIL: target=powerpc64{{.*}}
+
 // RUN: %clang %cflags %p/../Inputs/plt.c -fuse-ld=bfd \
 // RUN:    -o %t.bfd.exe -Wl,-q
 // RUN: llvm-bolt %t.bfd.exe -o %t.bfd.bolt.exe --use-old-text=0 --lite=0
