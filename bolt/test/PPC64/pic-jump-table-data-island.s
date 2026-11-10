@@ -25,6 +25,10 @@
 # RUN: llvm-bolt %t.exe -o %t.bolt 2>&1 | FileCheck %s
 # RUN: llvm-objdump -d %t.bolt | FileCheck %s --check-prefix=STUB
 # RUN: %t.bolt
+## The same input in lite mode: the linker thunk and the tail-jump stub must be the same.
+# RUN: llvm-bolt %t.exe -o %t.lite.bolt -lite 2>&1 | FileCheck %s
+# RUN: llvm-objdump -d %t.lite.bolt | FileCheck %s --check-prefix=STUB
+# RUN: %t.lite.bolt
 
 # CHECK: BOLT-INFO: Target architecture: powerpc64le
 # CHECK: BOLT-INFO: enabling relocation mode
@@ -39,14 +43,19 @@
 ## foo is not moved, but the linker's call thunk for it is. The thunk's branch
 ## has no relocation, so it must reach foo through the r2-free tail-jump stub
 ## and not through a stub that uses the TOC pointer, which is not set up here.
-# STUB-LABEL: <__bolt_ppc_abs_jmp_stub.{{.*}}>:
+## The thunk saves r2 and jumps to the stub. Capture the symbol the thunk's
+## branch targets and require that same symbol to be the stub body below.
+# STUB-LABEL: <__toc_save_{{.*}}>:
+# STUB:       std     2, 24(1)
+# STUB-NEXT:  b       {{(0x)?[0-9a-f]+}} <[[STUBSYM:__bolt_ppc_abs_jmp_stub\.[^>]+]]>
+# STUB:       <[[STUBSYM]]>:
 # STUB:       lis     12
 # STUB:       ori     12, 12
 # STUB:       sldi    12, 12, 32
 # STUB:       oris    12, 12
 # STUB:       ori     12, 12
 # STUB:       mtctr   12
-# STUB-NEXT:  bctr
+# STUB-NEXT:  bctr{{$}}
 # STUB-NOT:   addis   12, 2
         .text
         .abiversion 2
