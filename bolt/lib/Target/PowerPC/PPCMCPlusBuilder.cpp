@@ -527,14 +527,17 @@ void PPCMCPlusBuilder::replaceBranchTarget(MCInst &Inst, const MCSymbol *TBB,
 }
 
 bool PPCMCPlusBuilder::isIndirectBranch(const MCInst &I) const {
+  // An indirect call is not an indirect branch. A call returns to the next
+  // instruction, so it does not end a basic block and it has no jump table.
+  // ELFv2 section 2.3.6 calls through a pointer with "mtctr; bctrl", and
+  // BCTRL/BCTRL8 (and BCLRL, a conditional call through LR) are reported by
+  // isIndirectCall()/isCall(). Listing them here made every function that
+  // calls through a pointer non-simple.
   switch (I.getOpcode()) {
   case PPC::BCTR:
-  case PPC::BCTRL:
   case PPC::BCLR:
-  case PPC::BCLRL:
-  // isCodeGenOnly twins this port creates in createLongJmp(); see isBranch().
+  // isCodeGenOnly twin this port creates in createLongJmp(); see isBranch().
   case PPC::BCTR8:
-  case PPC::BCTRL8:
     return true;
   default:
     return false;
@@ -1274,8 +1277,9 @@ bool PPCMCPlusBuilder::analyzeBranch(InstructionIterator Begin,
     return true;
   }
 
-  // Indirect branches (bctr/bclr and their linked forms) have no statically
-  // known target symbol -- genuinely unanalyzable here.
+  // Indirect branches (bctr/bclr) have no statically known target symbol --
+  // genuinely unanalyzable here. Their linked forms (bctrl, bclrl) are calls,
+  // not branches, and fall through to the plain-fallthrough case below.
   if (isIndirectBranch(Last))
     return false;
 
