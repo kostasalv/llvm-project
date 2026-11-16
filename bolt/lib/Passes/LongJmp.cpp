@@ -1227,6 +1227,13 @@ bool LongJmpPass::relaxLocalBranches(BinaryFunction &BF,
           continue;
 
         const MCSymbol *TargetSymbol = MIB->getTargetSymbol(*Inst);
+
+        // PowerPC reports indirect jumps (bctr, bctr8, bclr) as unconditional
+        // branches. They have no target symbol, so there is no successor to
+        // split off. Skip them before the branch is erased.
+        if (BC.isPPC64() && (MIB->isIndirectBranch(*Inst) || !TargetSymbol))
+          continue;
+
         BB->eraseInstruction(BB->findInstruction(Inst));
 
         BinaryBasicBlock::BinaryBranchInfo BI;

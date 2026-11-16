@@ -888,12 +888,67 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
   // PPC64 ELFv2: GCC emits PIC switch tables as an array of signed 32-bit
   // word offsets embedded inside the function body immediately after bctr.
   // analyzeMemoryAt() is x86-only so the normal jump table discovery path
-  // cannot be used. Return UNKNOWN to skip full JT processing.
-  // The data island is marked early in disassemble() so the disassembler
-  // skips the data bytes before CFI attachment runs.
+  // cannot be used. The data island is marked early in disassemble() so the
+  // disassembler skips the data bytes before CFI attachment runs. Recognise the
+  // addis/addi pair that builds the table base, create a JTT_PIC table at the
+  // island and re-point the pair at the table that is emitted into .rodata.
+  // The island bytes stay in the function.
   if (BC.isPPC64() &&
       BranchType == IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE) {
-    return IndirectBranchType::UNKNOWN;
+    const uint64_t DataStart = Offset + Size;
+    const uint64_t IslandAddr = getAddress() + DataStart;
+    uint64_t IslandSize = 0;
+    MCInst *Addis = nullptr, *Addi = nullptr;
+    int64_t TOCDisp = 0;
+    const char *Reason = nullptr;
+    if (getSizeOfDataInCodeAt(DataStart) == 0 ||
+        !isInConstantIsland(IslandAddr, &IslandSize) || IslandSize == 0)
+      Reason = "no data island after the bctr";
+    else if (!BC.MIB->findPICJumpTableBase(Instruction, Instructions.begin(),
+                                           Instructions.end(), Addis, Addi,
+                                           TOCDisp))
+      Reason = "no addis/addi table base";
+    else if (BC.PPC64TOCBase + TOCDisp != IslandAddr)
+      Reason = "table base is not the island after the bctr";
+    else {
+      // Stop check: the function's own addis/addi pair is the only thing that
+      // may refer into the island. Any relocation inside the island, or another
+      // TOC-relative pair that resolves into it, keeps the function as it is.
+      auto RI = Relocations.lower_bound(DataStart);
+      if (RI != Relocations.end() && RI->first < DataStart + IslandSize) {
+        Reason = "relocation inside the island";
+      } else {
+        for (auto &[InstOff, Inst] : Instructions) {
+          (void)InstOff;
+          if (&Inst == Addis || &Inst == Addi)
+            continue;
+          if (BC.MIB->mayReferenceTOCRange(Inst, BC.PPC64TOCBase, IslandAddr,
+                                           IslandAddr + IslandSize)) {
+            Reason = "another TOC-relative reference near the island";
+            break;
+          }
+        }
+      }
+    }
+    if (Reason) {
+      if (opts::Verbosity >= 1)
+        BC.outs() << "BOLT-INFO: PPC64 PIC jump table not created in " << *this
+                  << " at 0x" << Twine::utohexstr(getAddress() + Offset)
+                  << ": " << Reason << '\n';
+      return IndirectBranchType::UNKNOWN;
+    }
+
+    const MCSymbol *JTLabel =
+        BC.getOrCreateJumpTable(*this, IslandAddr, JumpTable::JTT_PIC);
+    BC.MIB->retargetPICJumpTableBase(*Addis, *Addi, JTLabel,
+                                     -static_cast<int64_t>(BC.PPC64TOCBase),
+                                     BC.Ctx.get());
+    BC.MIB->setJumpTable(Instruction, IslandAddr, BC.MIB->getNoRegister());
+    JTSites.emplace_back(Offset, IslandAddr);
+    // The table label is the only symbol for the island start. A function label
+    // inside a constant island marks the function as corrupted.
+    Labels.erase(DataStart);
+    return IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE;
   }
 
   auto getExprValue = [&](const MCExpr *Expr) {

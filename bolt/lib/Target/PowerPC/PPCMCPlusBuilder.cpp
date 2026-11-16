@@ -1091,6 +1091,157 @@ bool PPCMCPlusBuilder::isPICJumpTableBctr(const MCInst &Instruction,
   return false;
 }
 
+// Index of the single immediate operand of \p I, or -1 if there is not exactly
+// one (the same rule replaceImmWithSymbolRef() applies).
+static int getSingleImmOperand(const MCInst &I) {
+  const unsigned N = MCPlus::getNumPrimeOperands(I);
+  int Found = -1;
+  for (unsigned Idx = 0; Idx != N; ++Idx) {
+    if (!I.getOperand(Idx).isImm())
+      continue;
+    if (Found != -1)
+      return -1;
+    Found = Idx;
+  }
+  return Found;
+}
+
+bool PPCMCPlusBuilder::findPICJumpTableBase(const MCInst &Branch,
+                                            InstructionIterator Begin,
+                                            InstructionIterator End,
+                                            MCInst *&AddisOut,
+                                            MCInst *&AddiOut,
+                                            int64_t &TOCDispOut) const {
+  AddisOut = nullptr;
+  AddiOut = nullptr;
+  TOCDispOut = 0;
+  if (Branch.getOpcode() != PPC::BCTR)
+    return false;
+
+  auto SameReg = [&](MCRegister A, MCRegister B) {
+    return A == B || RegInfo->isSubRegisterEq(A, B) ||
+           RegInfo->isSubRegisterEq(B, A);
+  };
+  auto IsAddis = [](unsigned Opc) {
+    return Opc == PPC::ADDIS || Opc == PPC::ADDIS8;
+  };
+  auto IsAddi = [](unsigned Opc) {
+    return Opc == PPC::ADDI || Opc == PPC::ADDI8;
+  };
+
+  // Walk back from the bctr: mtctr, then lwax, which names the table base
+  // register, then the addi and the addis that build that register.
+  enum { WantMtctr, WantLwax, WantAddi, WantAddis } State = WantMtctr;
+  MCRegister Base;
+  MCInst *Addi = nullptr;
+  for (auto It = End; It != Begin;) {
+    --It;
+    MCInst &Prev = *It;
+    if (&Prev == &Branch)
+      continue;
+    switch (State) {
+    case WantMtctr:
+      if (Prev.getOpcode() != PPC::MTCTR8 && Prev.getOpcode() != PPC::MTCTR)
+        return false;
+      State = WantLwax;
+      break;
+    case WantLwax:
+      if (Prev.getOpcode() != PPC::LWAX)
+        break;
+      if (MCPlus::getNumPrimeOperands(Prev) < 3 ||
+          !Prev.getOperand(1).isReg())
+        return false;
+      Base = Prev.getOperand(1).getReg();
+      State = WantAddi;
+      break;
+    case WantAddi:
+      if (!IsAddi(Prev.getOpcode())) {
+        // Anything else that writes the base register is not our pattern.
+        if (MCPlus::getNumPrimeOperands(Prev) > 0 &&
+            Prev.getOperand(0).isReg() &&
+            SameReg(Prev.getOperand(0).getReg(), Base))
+          return false;
+        break;
+      }
+      if (MCPlus::getNumPrimeOperands(Prev) < 3 ||
+          !Prev.getOperand(0).isReg() || !Prev.getOperand(1).isReg() ||
+          !SameReg(Prev.getOperand(0).getReg(), Base) ||
+          !SameReg(Prev.getOperand(1).getReg(), Base))
+        return false;
+      Addi = &Prev;
+      State = WantAddis;
+      break;
+    case WantAddis:
+      if (!IsAddis(Prev.getOpcode())) {
+        if (MCPlus::getNumPrimeOperands(Prev) > 0 &&
+            Prev.getOperand(0).isReg() &&
+            SameReg(Prev.getOperand(0).getReg(), Base))
+          return false;
+        break;
+      }
+      if (MCPlus::getNumPrimeOperands(Prev) < 3 ||
+          !Prev.getOperand(0).isReg() || !Prev.getOperand(1).isReg() ||
+          !SameReg(Prev.getOperand(0).getReg(), Base) ||
+          !SameReg(Prev.getOperand(1).getReg(), PPC::X2))
+        return false;
+      {
+        int AddisImm = getSingleImmOperand(Prev);
+        int AddiImm = getSingleImmOperand(*Addi);
+        if (AddisImm < 0 || AddiImm < 0)
+          return false;
+        // Both immediates must still be plain integers: the TOC16 relocations
+        // are not turned into symbolic operands.
+        TOCDispOut =
+            (int64_t(int16_t(Prev.getOperand(AddisImm).getImm())) << 16) +
+            int64_t(int16_t(Addi->getOperand(AddiImm).getImm()));
+      }
+      AddisOut = &Prev;
+      AddiOut = Addi;
+      return true;
+    }
+  }
+  return false;
+}
+
+void PPCMCPlusBuilder::retargetPICJumpTableBase(MCInst &Addis, MCInst &Addi,
+                                                const MCSymbol *NewTable,
+                                                int64_t Addend,
+                                                MCContext *Ctx) const {
+  // r2 is unchanged (the original .got does not move), so
+  //   r2 + ha(NewTable + Addend) << 16 + lo(NewTable + Addend)
+  // is NewTable when Addend is minus the original TOC base. Use absolute
+  // @ha/@l: createRelocation() has no TOC16 forms.
+  auto Rewrite = [&](MCInst &I, PPC::Specifier Spec) {
+    const int OpIdx = getSingleImmOperand(I);
+    assert(OpIdx >= 0 && "addis/addi without a single immediate");
+    const MCExpr *Ref =
+        MCSymbolRefExpr::create(NewTable, Spec, *Ctx);
+    const MCExpr *Expr = MCBinaryExpr::createAdd(
+        Ref, MCConstantExpr::create(Addend, *Ctx), *Ctx);
+    I.getOperand(OpIdx) = MCOperand::createExpr(Expr);
+  };
+  Rewrite(Addis, PPC::S_HA);
+  Rewrite(Addi, PPC::S_LO);
+}
+
+bool PPCMCPlusBuilder::mayReferenceTOCRange(const MCInst &Inst,
+                                            uint64_t TOCBase, uint64_t Begin,
+                                            uint64_t End) const {
+  if (Inst.getOpcode() != PPC::ADDIS && Inst.getOpcode() != PPC::ADDIS8)
+    return false;
+  if (MCPlus::getNumPrimeOperands(Inst) < 3 || !Inst.getOperand(1).isReg() ||
+      Inst.getOperand(1).getReg() != PPC::X2)
+    return false;
+  const int Imm = getSingleImmOperand(Inst);
+  if (Imm < 0)
+    return false;
+  // addis gives TOCBase + (imm << 16); the paired low part is a signed 16-bit
+  // value, so the final address is within [Base - 0x8000, Base + 0x7fff].
+  const int64_t Hi = int64_t(int16_t(Inst.getOperand(Imm).getImm())) << 16;
+  const uint64_t Base = TOCBase + Hi;
+  return Base - 0x8000 < End && Base + 0x8000 > Begin;
+}
+
 IndirectBranchType PPCMCPlusBuilder::analyzeIndirectBranch(
     MCInst &Instruction, InstructionIterator Begin, InstructionIterator End,
     const unsigned PtrSize, MCInst *&MemLocInstrOut, unsigned &BaseRegNumOut,

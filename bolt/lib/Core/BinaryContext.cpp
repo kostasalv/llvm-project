@@ -802,6 +802,17 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
   if (NextJTAddress)
     UpperBound = std::min(NextJTAddress, UpperBound);
 
+  // PPC64: a GCC PIC table lives inside the function, in a data island with no
+  // relocations. It ends where the island ends.
+  bool IsPPC64IslandTable = false;
+  if (isPPC64() && Type == JumpTable::JTT_PIC) {
+    uint64_t IslandSize = 0;
+    if (BF.isInConstantIsland(Address, &IslandSize)) {
+      IsPPC64IslandTable = true;
+      UpperBound = std::min(UpperBound, Address + IslandSize);
+    }
+  }
+
   LLVM_DEBUG({
     using JTT = JumpTable::JumpTableType;
     dbgs() << formatv("BOLT-DEBUG: analyzeJumpTable @{0:x} in {1}, JTT={2}\n",
@@ -815,7 +826,7 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
                       << " -> ");
     // Check if there's a proper relocation against the jump table entry.
     if (HasRelocations) {
-      if (Type == JumpTable::JTT_PIC &&
+      if (Type == JumpTable::JTT_PIC && !IsPPC64IslandTable &&
           !DataPCRelocations.count(EntryAddress)) {
         LLVM_DEBUG(
             dbgs() << "FAIL: JTT_PIC table, no relocation for this address\n");

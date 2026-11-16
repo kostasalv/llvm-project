@@ -140,6 +140,23 @@ public:
   bool isPICJumpTableBctr(const MCInst &Instruction, InstructionIterator Begin,
                           InstructionIterator End) const override;
 
+  /// Find the addis/addi pair that computes the PIC jump table base for the
+  /// bctr \p Branch (see MCPlusBuilder::findPICJumpTableBase).
+  bool findPICJumpTableBase(const MCInst &Branch, InstructionIterator Begin,
+                            InstructionIterator End, MCInst *&AddisOut,
+                            MCInst *&AddiOut,
+                            int64_t &TOCDispOut) const override;
+
+  /// Re-point the addis/addi pair at \p NewTable (+ \p Addend).
+  void retargetPICJumpTableBase(MCInst &Addis, MCInst &Addi,
+                                const MCSymbol *NewTable, int64_t Addend,
+                                MCContext *Ctx) const override;
+
+  /// True for an addis rX, r2, imm whose 64KiB window around TOCBase + imm
+  /// overlaps [\p Begin, \p End).
+  bool mayReferenceTOCRange(const MCInst &Inst, uint64_t TOCBase,
+                            uint64_t Begin, uint64_t End) const override;
+
   /// Return true if \p Inst is a call instruction that already encodes a NOP
   /// slot in its encoding (e.g. BL8_NOP = bl + nop as a single MCInst).
   /// These must NOT have an additional NOP injected after them.

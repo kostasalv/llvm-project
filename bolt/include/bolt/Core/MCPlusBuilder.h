@@ -1443,6 +1443,37 @@ public:
     return false;
   }
 
+  /// PPC64 ELFv2: for the PIC jump table dispatched by the bctr \p Branch,
+  /// find the pair that materializes the table base from the TOC pointer:
+  ///   addis rB, r2, X@toc@ha ; addi rB, rB, X@toc@l
+  /// The scan covers the instructions in [\p Begin, \p End) that precede
+  /// \p Branch. On success return the pair in \p AddisOut and \p AddiOut and
+  /// the table address relative to the TOC base in \p TOCDispOut.
+  /// Default: not recognized.
+  virtual bool findPICJumpTableBase(const MCInst &Branch,
+                                    InstructionIterator Begin,
+                                    InstructionIterator End,
+                                    MCInst *&AddisOut, MCInst *&AddiOut,
+                                    int64_t &TOCDispOut) const {
+    return false;
+  }
+
+  /// PPC64 ELFv2: make the pair found by findPICJumpTableBase() compute
+  /// (\p NewTable + \p Addend) instead of the original table address, using
+  /// absolute @ha/@l references to \p NewTable.
+  /// Default no-op for other targets.
+  virtual void retargetPICJumpTableBase(MCInst &Addis, MCInst &Addi,
+                                        const MCSymbol *NewTable,
+                                        int64_t Addend, MCContext *Ctx) const {}
+
+  /// Return true if \p Inst forms a TOC-relative address (r2 + immediate) that
+  /// may fall in [\p Begin, \p End), given the original TOC base \p TOCBase.
+  /// Used to prove that nothing else refers into a jump table island.
+  virtual bool mayReferenceTOCRange(const MCInst &Inst, uint64_t TOCBase,
+                                    uint64_t Begin, uint64_t End) const {
+    return false;
+  }
+
   /// Return true if \p Inst is an instruction that potentially traps when
   /// working with addresses not aligned to the size of the operand.
   virtual bool requiresAlignedAddress(const MCInst &Inst) const {
