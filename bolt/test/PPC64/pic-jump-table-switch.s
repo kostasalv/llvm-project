@@ -35,6 +35,9 @@
 # RUN: llvm-objdump -s -j .rodata.cold %t.bolt | FileCheck %s --check-prefix=TABLE
 ## C4: run the bolted binary. Each case of sw is called and checked.
 # RUN: %t.bolt
+## C6a and C6b: the old island is gone from sw (see the SIZE and MAP lines below).
+# RUN: llvm-nm -S %t.bolt | FileCheck %s --check-prefix=SIZE
+# RUN: llvm-nm -n %t.bolt | FileCheck %s --check-prefix=MAP
 
 ## C1: sw gets a CFG and is simple. Before the fix BOLT printed
 ## "failed to post-process indirect branches for sw" here.
@@ -47,18 +50,31 @@
 
 ## C3 and C2 are checked on the bolted binary (see the DUMP lines below).
 ## C3: the pair builds the address of the new table, not of the old island.
-## .TOC. is 0x10028318, so (61 << 16) + 32344 gives 0x10400170, the table
-## in .rodata.cold (the old island was at 0x100101ec).
+## .TOC. is 0x10028318, so (61 << 16) + 32304 gives 0x10400148, the table
+## in .rodata.cold, right after the 88 bytes of code of sw (the old island was
+## at 0x100101ec).
 # DUMP: <sw>:
 # DUMP: addis 4, 2, 61
-# DUMP: addi 4, 4, 32344
+# DUMP: addi 4, 4, 32304
 # DUMP: lwax 6, 4, 5
 # DUMP: bctr
 
-## C2: the new table, at 0x10400170. With the blocks reversed, entry i plus the
+## C6: the old island is not emitted. The table is in .rodata now, so the
+## words after the bctr are dead and must not stay in .text. Two checks, which
+## do not depend on the block order or on how llvm-objdump bounds a symbol:
+## C6a: sw is 88 bytes, the code only. With the island kept it is 108 bytes,
+## because the 5 table words (20 bytes) stay inside the symbol.
+# SIZE: {{[0-9a-f]+}} 0000000000000058 T sw{{$}}
+## C6b: no $d mapping symbol between sw and the next function. With the island
+## kept, BOLT marks the table words with $d (and the code after them with $x).
+# MAP: T sw
+# MAP-NOT: $d
+# MAP: T _start
+
+## C2: the new table, at 0x10400148. With the blocks reversed, entry i plus the
 ## table address is the block that returns 11, 22, 33, 44, 55 for i = 0..4.
-# TABLE: 10400170 c4feffff bcfeffff b4feffff acfeffff
-# TABLE-NEXT: 10400180 a4feffff
+# TABLE: 10400148 ecfeffff e4feffff dcfeffff d4feffff
+# TABLE-NEXT: 10400158 ccfeffff
 
         .text
         .abiversion 2

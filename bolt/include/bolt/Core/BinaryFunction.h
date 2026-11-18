@@ -620,6 +620,15 @@ private:
   /// Information on function constant islands.
   std::unique_ptr<IslandInfo> Islands;
 
+  /// PPC64: offsets of the GCC PIC jump table islands that are candidates for
+  /// dropping (data start -> code resume offset), recorded while disassembling.
+  std::map<uint64_t, uint64_t> PPC64PICIslandCandidates;
+
+  /// PPC64: island ranges (data start -> code resume offset) that
+  /// dropPPC64PICIslands() removed from Islands. Their bytes are still in the
+  /// input function body, so setIgnored() puts them back before rescanning.
+  std::map<uint64_t, uint64_t> DroppedIslandRanges;
+
   // Blocks are kept sorted in the layout order. If we need to change the
   // layout (if BasicBlocksLayout stores a different order than BasicBlocks),
   // the terminating instructions need to be modified.
@@ -1977,6 +1986,22 @@ public:
 
   /// Mark function that should not be emitted.
   void setIgnored();
+
+  /// PPC64: remember a GCC PIC jump table island [\p DataStart, \p CodeResume)
+  /// as a candidate for dropPPC64PICIslands().
+  void addPPC64PICIslandCandidate(uint64_t DataStart, uint64_t CodeResume) {
+    PPC64PICIslandCandidates.emplace(DataStart, CodeResume);
+  }
+
+  /// PPC64: once the CFG is built, the table of a GCC PIC jump table lives in
+  /// .rodata and the island bytes after the bctr are dead. Remove those
+  /// island ranges from Islands so that the function is emitted without them.
+  /// Does nothing unless the function is simple and every island range of the
+  /// function is a recorded candidate.
+  void dropPPC64PICIslands();
+
+  /// Return true if dropPPC64PICIslands() removed island ranges.
+  bool hasDroppedIslands() const { return !DroppedIslandRanges.empty(); }
 
   void setHasIndirectTargetToSplitFragment(bool V) {
     HasIndirectTargetToSplitFragment = V;

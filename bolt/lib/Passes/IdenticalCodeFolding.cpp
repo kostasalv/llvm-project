@@ -207,6 +207,11 @@ static bool isIdenticalWith(const BinaryFunction &A, const BinaryFunction &B,
   if (A.hasIslandsInfo() || B.hasIslandsInfo())
     return false;
 
+  // PPC64: a function whose jump table island was dropped has no island any
+  // more, but it still must not fold with another function.
+  if (A.hasDroppedIslands() || B.hasDroppedIslands())
+    return false;
+
   // Process both functions in either DFS or existing order.
   SmallVector<const BinaryBasicBlock *, 0> OrderA;
   SmallVector<const BinaryBasicBlock *, 0> OrderB;

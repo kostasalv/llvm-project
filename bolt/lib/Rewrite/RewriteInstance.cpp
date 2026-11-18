@@ -4710,6 +4710,11 @@ void RewriteInstance::postProcessFunctions() {
       continue;
     }
 
+    // PPC64: a function with a GCC PIC jump table now has its table in
+    // .rodata, so the island bytes after the bctr are not emitted.
+    if (BC->isPPC64())
+      Function.dropPPC64PICIslands();
+
     if (opts::PrintLoopInfo) {
       Function.calculateLoopInfo();
       Function.printLoopInfo(BC->outs());

@@ -49,6 +49,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <stack>
 #include <string>
 
@@ -945,6 +946,10 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
                                      BC.Ctx.get());
     BC.MIB->setJumpTable(Instruction, IslandAddr, BC.MIB->getNoRegister());
     JTSites.emplace_back(Offset, IslandAddr);
+    // The table will be emitted into .rodata, so the island bytes are dead
+    // once the CFG is built. Remember the island as a candidate to drop, see
+    // dropPPC64PICIslands().
+    addPPC64PICIslandCandidate(DataStart, DataStart + IslandSize);
     // The table label is the only symbol for the island start. A function label
     // inside a constant island marks the function as corrupted.
     Labels.erase(DataStart);
@@ -3568,6 +3573,15 @@ void BinaryFunction::setIgnored() {
   if (CurrentState == State::Empty)
     return;
 
+  // PPC64: the original bytes of a dropped jump table island are still in the
+  // function body, so scanExternalRefs() below must skip them again.
+  for (const auto &[DataStart, CodeResume] : DroppedIslandRanges) {
+    markDataAtOffset(DataStart);
+    if (CodeResume < getMaxSize())
+      markCodeAtOffset(CodeResume);
+  }
+  DroppedIslandRanges.clear();
+
   resetState();
 
   // Fix external references in the original function body.
@@ -3575,6 +3589,55 @@ void BinaryFunction::setIgnored() {
     LLVM_DEBUG(dbgs() << "Scanning refs in " << *this << '\n');
     scanExternalRefs();
   }
+}
+
+void BinaryFunction::dropPPC64PICIslands() {
+  // Without relocations BOLT rewrites in place and the function keeps its
+  // size, so the island must stay.
+  if (!BC.isPPC64() || !BC.HasRelocations || PPC64PICIslandCandidates.empty() ||
+      !isSimple() || isIgnored() || !Islands)
+    return;
+
+  auto Keep = [&](const char *Reason) {
+    if (opts::Verbosity >= 2)
+      BC.outs() << "BOLT-INFO: PPC64 jump table island kept in " << *this
+                << ": " << Reason << '\n';
+  };
+
+  // Only drop when every island of the function is one of the candidates, and
+  // nothing else hangs off the islands: no relocation, no symbol, no
+  // dependency on another function's island. Otherwise keep the island as
+  // commit 1 does.
+  IslandInfo &I = *Islands;
+  if (I.HasDynamicRelocations || !I.Relocations.empty() || !I.Offsets.empty() ||
+      !I.Symbols.empty() || !I.ProxySymbols.empty() || !I.ColdSymbols.empty() ||
+      !I.Proxies.empty() || !I.ColdProxies.empty() || !I.Dependency.empty())
+    return Keep("the island has relocations, symbols or dependencies");
+
+  std::set<uint64_t> Starts, Resumes;
+  uint64_t Bytes = 0;
+  for (const auto &[DataStart, CodeResume] : PPC64PICIslandCandidates) {
+    // The table at DataStart must exist and be a PIC table, so that the
+    // retargeted addis/addi pair does not point back into the island.
+    auto JTI = JumpTables.find(getAddress() + DataStart);
+    if (JTI == JumpTables.end() || JTI->second->Type != JumpTable::JTT_PIC)
+      return Keep("no PIC jump table at the island");
+    Starts.insert(DataStart);
+    Resumes.insert(CodeResume);
+    Bytes += CodeResume - DataStart;
+  }
+  if (I.DataOffsets != Starts)
+    return Keep("the function has an island that is not a jump table");
+  for (uint64_t Off : I.CodeOffsets)
+    if (!Resumes.count(Off))
+      return Keep("code offsets do not match the jump table islands");
+
+  DroppedIslandRanges = PPC64PICIslandCandidates;
+  Islands.reset();
+  if (opts::Verbosity >= 1)
+    BC.outs() << "BOLT-INFO: PPC64 dropped " << DroppedIslandRanges.size()
+              << " jump table island(s), " << Bytes << " bytes, in " << *this
+              << '\n';
 }
 
 void BinaryFunction::duplicateConstantIslands() {
