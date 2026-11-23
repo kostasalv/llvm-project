@@ -637,6 +637,15 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
   }
   uint64_t EntryID = 0;
   const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(Target, &EntryID);
+  // PPC64: a secondary entry made after the CFG is built has no BinaryData, so
+  // getSymbolValue() below cannot resolve it. It is at the tentative address of
+  // its own block. Entries that have BinaryData keep the lookup below.
+  if (const BinaryBasicBlock *EntryBB =
+          getPPC64EntryBlock(BC, TargetFunc, Target, EntryID)) {
+    auto BBIter = BBAddresses.find(EntryBB);
+    if (BBIter != BBAddresses.end())
+      return BBIter->second;
+  }
   auto Iter = HotAddresses.find(TargetFunc);
   if (Iter == HotAddresses.end() || (TargetFunc && EntryID)) {
     // Look at BinaryContext's resolution for this symbol - this is a symbol not
@@ -646,6 +655,20 @@ uint64_t LongJmpPass::getSymbolAddress(const BinaryContext &BC,
     return *ValueOrError;
   }
   return Iter->second;
+}
+
+const BinaryBasicBlock *
+LongJmpPass::getPPC64EntryBlock(const BinaryContext &BC,
+                                const BinaryFunction *TargetFunc,
+                                const MCSymbol *Target, uint64_t EntryID) {
+  if (!BC.isPPC64() || !TargetFunc || !EntryID || !BC.shouldEmit(*TargetFunc))
+    return nullptr;
+  if (BC.getBinaryDataByName(Target->getName()))
+    return nullptr;
+  for (const BinaryBasicBlock &BB : *TargetFunc)
+    if (TargetFunc->getSecondaryEntryPointSymbol(BB) == Target)
+      return &BB;
+  return nullptr;
 }
 
 bool LongJmpPass::tryResolveForDiag(const BinaryContext &BC,
@@ -659,6 +682,14 @@ bool LongJmpPass::tryResolveForDiag(const BinaryContext &BC,
   // "no answer" into "no run".
   uint64_t EntryID = 0;
   const BinaryFunction *TargetFunc = BC.getFunctionForSymbol(TgtSym, &EntryID);
+  if (const BinaryBasicBlock *EntryBB =
+          getPPC64EntryBlock(BC, TargetFunc, TgtSym, EntryID)) {
+    auto BBIter = BBAddresses.find(EntryBB);
+    if (BBIter != BBAddresses.end()) {
+      Addr = BBIter->second;
+      return true;
+    }
+  }
   if (TargetFunc && !EntryID) {
     auto Iter = HotAddresses.find(TargetFunc);
     if (Iter != HotAddresses.end()) {

@@ -224,6 +224,13 @@ class LongJmpPass : public BinaryFunctionPass {
   uint64_t getSymbolAddress(const BinaryContext &BC, const MCSymbol *Target,
                             const BinaryBasicBlock *TgtBB) const;
 
+  /// PPC64: if \p Target is a secondary entry point of the emitted function
+  /// \p TargetFunc that has no BinaryData (made after the CFG was built),
+  /// return the block it marks.
+  static const BinaryBasicBlock *
+  getPPC64EntryBlock(const BinaryContext &BC, const BinaryFunction *TargetFunc,
+                     const MCSymbol *Target, uint64_t EntryID);
+
   /// Relax function by adding necessary stubs or relaxing existing stubs
   Error relax(BinaryFunction &BF, bool &Modified);
 
