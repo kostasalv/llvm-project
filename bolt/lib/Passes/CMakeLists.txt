@@ -31,6 +31,7 @@ add_llvm_library(LLVMBOLTPasses
   PointerAuthCFIAnalyzer.cpp
   PointerAuthCFIFixup.cpp
   ProfileQualityStats.cpp
+  RedirectLongBranchStubs.cpp
   RegAnalysis.cpp
   RegReAssign.cpp
   ReorderAlgorithm.cpp

@@ -30,6 +30,7 @@
 #include "bolt/Passes/PointerAuthCFIFixup.h"
 #include "bolt/Passes/ProfileQualityStats.h"
 #include "bolt/Passes/RegReAssign.h"
+#include "bolt/Passes/RedirectLongBranchStubs.h"
 #include "bolt/Passes/ReorderData.h"
 #include "bolt/Passes/ReorderFunctions.h"
 #include "bolt/Passes/RetpolineInsertion.h"
@@ -146,6 +147,11 @@ static cl::opt<bool>
     PrintLongJmp("print-longjmp",
                  cl::desc("print functions after longjmp pass"), cl::Hidden,
                  cl::cat(BoltOptCategory));
+
+static cl::opt<bool> PrintRedirectLongBranchStubs(
+    "print-redirect-long-branch-stubs",
+    cl::desc("print functions after redirect-long-branch-stubs pass"),
+    cl::Hidden, cl::cat(BoltOptCategory));
 
 cl::opt<bool>
     PrintNormalized("print-normalized",
@@ -550,6 +556,13 @@ Error BinaryFunctionPassManager::runAllPasses(BinaryContext &BC) {
     Manager.registerPass(
         std::make_unique<PointerAuthCFIFixup>(PrintPAuthCFIFixup));
   }
+
+  // PPC64 ELFv2: call a moved function directly instead of through the
+  // `.long_branch.` stub that stays at its old address, before LongJmp decides
+  // which calls need a thunk.
+  if (BC.isPPC64())
+    Manager.registerPass(std::make_unique<RedirectLongBranchStubs>(
+        PrintRedirectLongBranchStubs));
 
   // PPC64 ELFv2: insert long-jump stubs for bl instructions that exceed the
   // ±32MB range limit after BOLT moves functions to a new segment.

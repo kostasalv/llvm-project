@@ -1,0 +1,52 @@
+## The real case: GNU ld builds a `.long_branch.` stub (one `b` to the local
+## entry of target, relocation target+8) because main and target are more than
+## 32 MiB apart. BOLT moves main and target into the new text. A call through the
+## stub goes to the stub that stays at the old address; with the redirect it goes
+## straight to the local entry of target. The program loads a variable through
+## the TOC in target, so its exit value is right only if r2 is right on entry.
+##
+## The control builds the same program with r2 shifted by 8 around the call. The
+## original program exits 1: the stub reaches target's local entry, which trusts
+## the caller's r2. Without the redirect BOLT's output exits 0, because the call
+## then goes through a relay in main that sets r2 to the absolute TOC and the
+## new copy of target sets it again in its first two instructions, so the shift
+## is lost. With the redirect the call lands on the local entry of the new copy
+## and the shift is kept, so the output exits 1 like the original. The exit
+## value has to be exactly 1 (not a crash, not 0).
+
+# REQUIRES: system-linux
+# RUN: gcc -O2 -mcpu=power8 -fno-pic -no-pie -fno-optimize-sibling-calls \
+# RUN:     -mtraceback=no -c %S/Inputs/long-branch-stub-main.c -o %t.main.o
+# RUN: gcc -O2 -mcpu=power8 -mcmodel=medium -fno-pic -no-pie -fno-optimize-sibling-calls \
+# RUN:     -mtraceback=no -c %S/Inputs/long-branch-stub-target.c -o %t.target.o
+# RUN: gcc -c %S/Inputs/long-branch-stub-pad.s -o %t.pad.o
+# RUN: gcc -no-pie -Wl,--emit-relocs %t.main.o %t.pad.o %t.target.o -o %t.exe
+# RUN: llvm-nm %t.exe | FileCheck %s --check-prefix=GNU-STUB
+# RUN: llvm-objdump -d --no-show-raw-insn %t.exe --disassemble-symbols=main \
+# RUN:   | FileCheck %s --check-prefix=GNU-CALL
+# RUN: %t.exe
+# RUN: llvm-bolt %t.exe -o %t.bolt --lite=0 2>&1 | FileCheck %s --check-prefix=GNU-BOLT
+# RUN: llvm-nm %t.bolt > %t.nm
+# RUN: llvm-objdump -d --no-show-raw-insn %t.bolt --disassemble-symbols=main >> %t.nm
+# RUN: FileCheck %s --check-prefix=GNU-OUT --input-file=%t.nm
+# RUN: %t.bolt
+
+## The control.
+# RUN: gcc -O2 -mcpu=power8 -fno-pic -no-pie -fno-optimize-sibling-calls \
+# RUN:     -mtraceback=no -DWRONG_R2 -c %S/Inputs/long-branch-stub-main.c -o %t.badmain.o
+# RUN: gcc -no-pie -Wl,--emit-relocs %t.badmain.o %t.pad.o %t.target.o -o %t.bad.exe
+# RUN: sh -c '%t.bad.exe; test $? -eq 1'
+# RUN: llvm-bolt %t.bad.exe -o %t.bad.bolt --lite=0
+# RUN: sh -c '%t.bad.bolt; test $? -eq 1'
+
+## The linker made a stub in front of target (a hex prefix, then the target name).
+# GNU-STUB: {{[0-9a-f]+}} t {{[0-9a-f]+}}.long_branch.target
+# GNU-CALL: bl 0x{{[0-9a-f]+}} <{{[0-9a-f]+}}.long_branch.target>
+
+## One or more: the linker also puts a stub in front of _init, which may be redirected too.
+# GNU-BOLT: BOLT-INFO: long_branch stubs: {{[1-9][0-9]*}} calls redirected,
+
+## main calls the local entry of target in the new text, with no stub in between.
+# GNU-OUT: [[#%x,TARGET:]] T target
+# GNU-OUT-LABEL: <main>:
+# GNU-OUT: bl 0x[[#%x,TARGET+8]] <target+0x8>
